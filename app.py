@@ -10,7 +10,7 @@ import streamlit as st
 
 import periods
 import zelty_client
-from auth import check_password
+from auth import check_password, logout
 from theme import COLORS, header, inject_css
 
 FAVICON = Path(__file__).parent / "assets" / "favicon.svg"
@@ -277,7 +277,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     if st.button("Déconnexion"):
-        st.session_state.pop("auth_ok", None)
+        logout()
         st.rerun()
     st.markdown("---")
     ok, msg = zelty_client.health_check()

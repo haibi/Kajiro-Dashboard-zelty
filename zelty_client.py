@@ -28,9 +28,9 @@ from tenacity import (
 PARIS = ZoneInfo("Europe/Paris")
 
 ENDPOINTS = {
-    "restaurants": "/v2/restaurants",
-    "orders": "/v2/orders",
-    "articles": "/v2/articles",
+    "restaurants": "/v1/restaurants",
+    "orders": "/v1/orders",
+    "articles": "/v1/articles",
 }
 
 # Status code "fermé/payé" — confirmé par la doc KEYBAN
