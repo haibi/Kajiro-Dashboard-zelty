@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Bloque tout commit contenant un pattern de secret Zelty ou un fichier secrets.toml
+set -e
+
+# 1. Refus de committer secrets.toml même si .gitignore est bypassed
+if git diff --cached --name-only | grep -E "(^|/)secrets\.toml$|\.env$|clezelty" >/dev/null; then
+  echo "❌ COMMIT BLOQUÉ — un fichier de secrets est staged."
+  git diff --cached --name-only | grep -E "(^|/)secrets\.toml$|\.env$|clezelty"
+  exit 1
+fi
+
+# 2. Refus de committer toute trace de la signature de clé Zelty (préfixe base64 du chain_id)
+if git diff --cached -U0 | grep -E "MjE0NDI6[A-Za-z0-9+/=]{20,}" >/dev/null; then
+  echo "❌ COMMIT BLOQUÉ — la clé API Zelty apparaît dans le diff."
+  echo "Supprimer la valeur, utiliser st.secrets[...] à la place."
+  exit 1
+fi
+
+exit 0
