@@ -1,6 +1,7 @@
 """Palette et CSS — charte officielle Kajirō Sushi."""
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 import streamlit as st
@@ -34,32 +35,28 @@ def load_svg(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def inject_css() -> None:
-    st.markdown(
-        f"""
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600;700;800;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-        <style>
+def _css() -> str:
+    c = COLORS
+    return textwrap.dedent(f"""
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600;700;800;900&display=swap');
+
         :root {{
-            --kj-bg: {COLORS['bg']};
-            --kj-surface: {COLORS['surface']};
-            --kj-surface-alt: {COLORS['surface_alt']};
-            --kj-border: {COLORS['border']};
-            --kj-coral: {COLORS['coral']};
-            --kj-white: {COLORS['white']};
-            --kj-muted: {COLORS['muted']};
+            --kj-bg: {c['bg']};
+            --kj-surface: {c['surface']};
+            --kj-surface-alt: {c['surface_alt']};
+            --kj-border: {c['border']};
+            --kj-coral: {c['coral']};
+            --kj-white: {c['white']};
+            --kj-muted: {c['muted']};
         }}
 
         html, body, [class*="css"], .stApp {{
             font-family: 'Poppins', system-ui, sans-serif !important;
-            background: {COLORS['bg']} !important;
-            color: {COLORS['white']} !important;
+            background: {c['bg']} !important;
+            color: {c['white']} !important;
         }}
 
-        /* hide streamlit chrome */
-        #MainMenu {{ visibility: hidden; }}
-        footer {{ visibility: hidden; }}
+        #MainMenu, footer {{ visibility: hidden; }}
         header[data-testid="stHeader"] {{
             background: transparent !important;
             height: 0 !important;
@@ -73,45 +70,40 @@ def inject_css() -> None:
 
         h1, h2, h3, h4 {{
             font-family: 'Poppins', sans-serif !important;
-            color: {COLORS['white']} !important;
+            color: {c['white']} !important;
             font-weight: 700 !important;
             letter-spacing: 0.01em;
         }}
 
-        /* Sidebar */
         section[data-testid="stSidebar"] {{
-            background: {COLORS['surface']} !important;
-            border-right: 1px solid {COLORS['border']};
+            background: {c['surface']} !important;
+            border-right: 1px solid {c['border']};
         }}
 
-        /* Metric cards */
         div[data-testid="stMetric"] {{
-            background: {COLORS['surface']};
-            border: 1px solid {COLORS['border']};
+            background: {c['surface']};
+            border: 1px solid {c['border']};
             border-radius: 12px;
             padding: 16px 18px;
             transition: border-color 0.2s;
         }}
-        div[data-testid="stMetric"]:hover {{
-            border-color: {COLORS['coral']}66;
-        }}
+        div[data-testid="stMetric"]:hover {{ border-color: {c['coral']}66; }}
         div[data-testid="stMetricLabel"] {{
-            color: {COLORS['muted']} !important;
+            color: {c['muted']} !important;
             font-size: 10px !important;
             font-weight: 600 !important;
             letter-spacing: 0.14em;
             text-transform: uppercase;
         }}
         div[data-testid="stMetricValue"] {{
-            color: {COLORS['white']} !important;
+            color: {c['white']} !important;
             font-size: 26px !important;
             font-weight: 700 !important;
             font-family: 'Poppins', sans-serif !important;
         }}
 
-        /* Buttons */
         .stButton > button {{
-            background: {COLORS['coral']} !important;
+            background: {c['coral']} !important;
             color: white !important;
             border: none !important;
             border-radius: 8px !important;
@@ -122,80 +114,71 @@ def inject_css() -> None:
             padding: 8px 18px !important;
         }}
         .stButton > button:hover {{
-            background: {COLORS['coral_dim']} !important;
+            background: {c['coral_dim']} !important;
             transform: translateY(-1px);
-            box-shadow: 0 4px 12px {COLORS['coral']}33;
+            box-shadow: 0 4px 12px {c['coral']}33;
         }}
         .stButton > button[kind="secondary"] {{
             background: transparent !important;
-            border: 1px solid {COLORS['border']} !important;
-            color: {COLORS['muted']} !important;
+            border: 1px solid {c['border']} !important;
+            color: {c['muted']} !important;
         }}
         .stButton > button[kind="secondary"]:hover {{
-            border-color: {COLORS['coral']} !important;
-            color: {COLORS['coral']} !important;
+            border-color: {c['coral']} !important;
+            color: {c['coral']} !important;
             box-shadow: none;
         }}
 
-        /* Inputs */
         [data-baseweb="select"] > div,
         [data-baseweb="input"] > div,
         .stTextInput input,
         .stDateInput input {{
-            background: {COLORS['surface_alt']} !important;
-            border-color: {COLORS['border']} !important;
-            color: {COLORS['white']} !important;
+            background: {c['surface_alt']} !important;
+            border-color: {c['border']} !important;
+            color: {c['white']} !important;
             font-family: 'Poppins', sans-serif !important;
         }}
         .stTextInput input:focus,
         .stDateInput input:focus {{
-            border-color: {COLORS['coral']} !important;
-            box-shadow: 0 0 0 1px {COLORS['coral']}33 !important;
+            border-color: {c['coral']} !important;
+            box-shadow: 0 0 0 1px {c['coral']}33 !important;
         }}
 
-        /* Multiselect tags */
         [data-baseweb="tag"] {{
-            background: {COLORS['coral']}22 !important;
-            border: 1px solid {COLORS['coral']}66 !important;
-            color: {COLORS['coral']} !important;
+            background: {c['coral']}22 !important;
+            border: 1px solid {c['coral']}66 !important;
+            color: {c['coral']} !important;
             font-family: 'Poppins', sans-serif !important;
         }}
 
-        /* DataFrame */
         .stDataFrame, [data-testid="stDataFrame"] {{
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {c['border']};
             border-radius: 12px;
             overflow: hidden;
         }}
 
-        /* Tabs */
         button[data-baseweb="tab"] {{
             font-family: 'Poppins', sans-serif !important;
             font-weight: 600 !important;
             letter-spacing: 0.08em;
-            color: {COLORS['muted']} !important;
+            color: {c['muted']} !important;
         }}
-        button[data-baseweb="tab"][aria-selected="true"] {{
-            color: {COLORS['white']} !important;
-        }}
-        [data-baseweb="tab-highlight"] {{
-            background: {COLORS['coral']} !important;
-        }}
+        button[data-baseweb="tab"][aria-selected="true"] {{ color: {c['white']} !important; }}
+        [data-baseweb="tab-highlight"] {{ background: {c['coral']} !important; }}
 
-        hr {{ border-color: {COLORS['border']} !important; }}
-        a {{ color: {COLORS['coral']} !important; text-decoration: none; }}
+        hr {{ border-color: {c['border']} !important; }}
+        a {{ color: {c['coral']} !important; text-decoration: none; }}
 
-        /* Header brand */
         .kj-header {{
             display: flex; align-items: center; gap: 16px;
             padding: 10px 0 22px 0;
-            border-bottom: 1px solid {COLORS['border']};
+            border-bottom: 1px solid {c['border']};
             margin-bottom: 28px;
         }}
         .kj-header svg {{ height: 38px; width: auto; }}
         .kj-header-sub {{
             margin-left: auto;
-            color: {COLORS['muted']};
+            color: {c['muted']};
             font-size: 11px;
             letter-spacing: 0.18em;
             font-weight: 500;
@@ -203,28 +186,27 @@ def inject_css() -> None:
         }}
         .kj-pill {{
             display: inline-flex; align-items: center; gap: 6px;
-            background: {COLORS['surface']};
-            border: 1px solid {COLORS['border']};
+            background: {c['surface']};
+            border: 1px solid {c['border']};
             border-radius: 999px;
             padding: 4px 12px;
             font-size: 10px;
-            color: {COLORS['muted']};
+            color: {c['muted']};
             letter-spacing: 0.12em;
             text-transform: uppercase;
         }}
         .kj-pill-dot {{
             width: 6px; height: 6px; border-radius: 50%;
-            background: {COLORS['coral']};
-            box-shadow: 0 0 8px {COLORS['coral']};
+            background: {c['coral']};
+            box-shadow: 0 0 8px {c['coral']};
         }}
 
-        /* Login page */
         .kj-login-bg {{
             position: fixed; inset: 0; z-index: -1;
             background:
-                radial-gradient(circle at 20% 30%, {COLORS['coral']}11 0%, transparent 40%),
-                radial-gradient(circle at 80% 70%, {COLORS['coral']}08 0%, transparent 50%),
-                {COLORS['bg']};
+                radial-gradient(circle at 20% 30%, {c['coral']}11 0%, transparent 40%),
+                radial-gradient(circle at 80% 70%, {c['coral']}08 0%, transparent 50%),
+                {c['bg']};
         }}
         .kj-login-card {{
             max-width: 380px;
@@ -243,7 +225,7 @@ def inject_css() -> None:
             font-weight: 200;
             letter-spacing: 0.32em;
             font-size: 11px;
-            color: {COLORS['muted']};
+            color: {c['muted']};
             text-transform: uppercase;
             margin-bottom: 4px;
         }}
@@ -252,37 +234,36 @@ def inject_css() -> None:
             font-weight: 600;
             letter-spacing: 0.08em;
             font-size: 13px;
-            color: {COLORS['white']};
+            color: {c['white']};
             margin-bottom: 28px;
         }}
         .kj-login-divider {{
             width: 40px; height: 2px;
-            background: {COLORS['coral']};
+            background: {c['coral']};
             margin: 0 auto 28px;
             border-radius: 2px;
         }}
         .kj-login-footer {{
             margin-top: 32px;
-            color: {COLORS['dim']};
+            color: {c['dim']};
             font-size: 10px;
             letter-spacing: 0.16em;
             text-transform: uppercase;
         }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """).strip()
+
+
+def inject_css() -> None:
+    st.markdown(f"<style>{_css()}</style>", unsafe_allow_html=True)
 
 
 def header() -> None:
     logo = load_svg("logo_ligne_blanc.svg")
-    st.markdown(
-        f"""
-        <div class="kj-header">
-          {logo}
-          <span class="kj-pill"><span class="kj-pill-dot"></span> Analytics réseau</span>
-          <span class="kj-header-sub">Tableau de bord</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    html = (
+        '<div class="kj-header">'
+        f"{logo}"
+        '<span class="kj-pill"><span class="kj-pill-dot"></span> Analytics réseau</span>'
+        '<span class="kj-header-sub">Tableau de bord</span>'
+        '</div>'
     )
+    st.markdown(html, unsafe_allow_html=True)

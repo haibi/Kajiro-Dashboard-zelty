@@ -24,17 +24,15 @@ def check_password() -> bool:
     logo = load_svg("logo_carre_blanc.svg")
 
     st.markdown('<div class="kj-login-bg"></div>', unsafe_allow_html=True)
-    st.markdown(
-        f"""
-        <div class="kj-login-card">
-          <div class="kj-login-logo">{logo}</div>
-          <div class="kj-login-title">Analytics réseau</div>
-          <div class="kj-login-sub">Tableau de bord</div>
-          <div class="kj-login-divider"></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    card_html = (
+        '<div class="kj-login-card">'
+        f'<div class="kj-login-logo">{logo}</div>'
+        '<div class="kj-login-title">Analytics réseau</div>'
+        '<div class="kj-login-sub">Tableau de bord</div>'
+        '<div class="kj-login-divider"></div>'
+        '</div>'
     )
+    st.markdown(card_html, unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 1.6, 1])
     with col2:
@@ -53,11 +51,11 @@ def check_password() -> bool:
                 unsafe_allow_html=True,
             )
 
-    st.markdown(
+    footer_html = (
         '<div class="kj-login-card" style="margin-top:24px;padding:0;">'
         '<div class="kj-login-footer">Yumea · 7 établissements</div>'
-        '</div>',
-        unsafe_allow_html=True,
+        '</div>'
     )
+    st.markdown(footer_html, unsafe_allow_html=True)
 
     return False

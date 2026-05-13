@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -12,6 +13,8 @@ import zelty_client
 from auth import check_password
 from theme import COLORS, header, inject_css
 
+FAVICON = Path(__file__).parent / "assets" / "favicon.svg"
+
 # Liste de référence pour mappage nom → ID si Zelty ne retourne pas les noms attendus
 KAJIRO_SITES = ["Tain", "Roussillon", "Davézieux", "Vienne", "Condrieu", "Veauche", "Bron"]
 
@@ -19,7 +22,7 @@ TOP_PRESETS = [15, 30, 50, 100]
 
 st.set_page_config(
     page_title="Kajirō Sushi · Analytics",
-    page_icon="🍣",
+    page_icon=str(FAVICON) if FAVICON.exists() else None,
     layout="wide",
     initial_sidebar_state="collapsed",
 )
