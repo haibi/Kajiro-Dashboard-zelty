@@ -1,84 +1,65 @@
-"""Gate de mot de passe + session persistante 12h via cookie signé HMAC."""
+"""Auth Google OAuth via st.login() (Streamlit ≥ 1.42).
+
+La config OAuth est dans .streamlit/secrets.toml sous [auth].
+La whitelist d'emails + rôles est dans [auth_allowed_users].
+Pas de gestion de mot de passe — Google fournit le 2FA et l'audit.
+"""
 from __future__ import annotations
 
-import hashlib
-import hmac
-import time
-from datetime import datetime, timedelta
-
-import extra_streamlit_components as stx
 import streamlit as st
 
 from theme import load_svg
 
-COOKIE_NAME = "kj_session"
-TTL_HOURS = 12
-TTL_SECONDS = TTL_HOURS * 3600
+
+ROLE_ADMIN = "admin"
+ROLE_VIEWER = "viewer"
 
 
-def _cookies() -> stx.CookieManager:
-    # NOTE: ne pas mettre dans @st.cache_resource — CookieManager est un widget,
-    # Streamlit le détecte et lève CachedWidgetWarning. La `key` suffit à garder
-    # le même composant entre les reruns.
-    return stx.CookieManager(key="kj_cookie_mgr")
-
-
-def _sign(timestamp: int, secret: str) -> str:
-    return hmac.new(secret.encode(), str(timestamp).encode(), hashlib.sha256).hexdigest()[:32]
-
-
-def _make_token(secret: str) -> str:
-    ts = int(time.time())
-    return f"{ts}.{_sign(ts, secret)}"
-
-
-def _verify_token(token: object, secret: str) -> bool:
-    if not isinstance(token, str) or "." not in token or not secret:
-        return False
+def _allowed_users() -> dict[str, str]:
+    """Retourne {email_lowercase: role} depuis secrets [auth_allowed_users]."""
     try:
-        ts_str, sig = token.split(".", 1)
-        ts = int(ts_str)
-    except (ValueError, TypeError):
-        return False
-    if time.time() - ts > TTL_SECONDS:
-        return False
-    return hmac.compare_digest(sig, _sign(ts, secret))
+        raw = st.secrets["auth_allowed_users"]
+    except (KeyError, FileNotFoundError):
+        return {}
+    return {str(email).strip().lower(): str(role).strip().lower() for email, role in raw.items()}
+
+
+def current_user() -> dict[str, str] | None:
+    """Renvoie {email, name, picture, role} si l'utilisateur est loggé et autorisé."""
+    if not getattr(st.user, "is_logged_in", False):
+        return None
+    email = (getattr(st.user, "email", "") or "").lower()
+    role = _allowed_users().get(email)
+    if not role:
+        return None
+    return {
+        "email": email,
+        "name": getattr(st.user, "name", "") or email,
+        "picture": getattr(st.user, "picture", "") or "",
+        "role": role,
+    }
+
+
+def is_admin() -> bool:
+    u = current_user()
+    return bool(u and u.get("role") == ROLE_ADMIN)
 
 
 def logout() -> None:
-    """Efface la session côté serveur ET le cookie côté navigateur."""
-    try:
-        _cookies().delete(COOKIE_NAME)
-    except Exception:
-        pass
-    st.session_state.pop("auth_ok", None)
+    """Déconnexion : st.logout() efface la session Streamlit + redirige."""
+    if hasattr(st, "logout"):
+        st.logout()
 
 
-def check_password() -> bool:
-    secret = st.secrets.get("DASHBOARD_PASSWORD", "")
-    cm = _cookies()
+def require_login() -> dict[str, str]:
+    """Bloque le rendu si l'utilisateur n'est pas connecté avec un email whitelisté.
 
-    # Restore session from cookie
-    token = cm.get(COOKIE_NAME)
-    if _verify_token(token, secret):
-        st.session_state["auth_ok"] = True
-        return True
-
-    if st.session_state.get("auth_ok"):
-        return True
-
-    def _verify() -> None:
-        pw = st.session_state.get("pw", "")
-        if secret and hmac.compare_digest(pw, secret):
-            st.session_state["auth_ok"] = True
-            cm.set(
-                COOKIE_NAME,
-                _make_token(secret),
-                expires_at=datetime.now() + timedelta(hours=TTL_HOURS),
-            )
-            st.session_state.pop("pw", None)
-        else:
-            st.session_state["auth_ok"] = False
+    Affiche la page de login (logo + bouton Google) et `st.stop()`. Sinon renvoie
+    le dict utilisateur.
+    """
+    user = current_user()
+    if user:
+        return user
 
     logo = load_svg("logo_carre_blanc.svg")
     st.markdown('<div class="kj-login-bg"></div>', unsafe_allow_html=True)
@@ -94,26 +75,30 @@ def check_password() -> bool:
 
     col1, col2, col3 = st.columns([1, 1.6, 1])
     with col2:
-        st.text_input(
-            "Mot de passe",
-            type="password",
-            on_change=_verify,
-            key="pw",
-            label_visibility="collapsed",
-            placeholder="Mot de passe",
-        )
-        if st.session_state.get("auth_ok") is False:
+        if not getattr(st.user, "is_logged_in", False):
+            # Pas encore connecté
+            if st.button("Se connecter avec Google", type="primary", use_container_width=True):
+                st.login("google")
+        else:
+            # Connecté côté Google mais email pas dans la whitelist
+            connected_email = getattr(st.user, "email", "?")
             st.markdown(
-                '<div style="color:#ED7553;font-size:12px;text-align:center;'
-                'margin-top:8px;letter-spacing:0.08em;">Mot de passe incorrect</div>',
+                f'<div style="color:#ED7553;font-size:13px;text-align:center;'
+                f'margin:12px 0;letter-spacing:0.04em;line-height:1.5;">'
+                f"Le compte <b>{connected_email}</b><br>n'est pas autorisé.<br>"
+                f"<span style=\"font-size:11px;color:#7A7A7A;\">Contacte hello@kajirosushi.com</span>"
+                f"</div>",
                 unsafe_allow_html=True,
             )
+            if st.button("Changer de compte Google", use_container_width=True):
+                st.logout()
 
     st.markdown(
         '<div class="kj-login-card" style="margin-top:24px;padding:0;">'
-        '<div class="kj-login-footer">Yumea · 7 établissements · Session 12h</div>'
+        '<div class="kj-login-footer">Yumea · Kajirō Sushi · Accès SSO Google</div>'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    return False
+    st.stop()
+    return {}  # unreachable

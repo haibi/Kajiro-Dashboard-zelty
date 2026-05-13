@@ -33,6 +33,10 @@ API_VERSION = "2.10"
 PER_PAGE = 200
 MAX_PARALLEL = 3
 
+# Restaurants accessibles via la clé groupe mais hors périmètre Kajirō.
+# In Bun (id 6328) — concept séparé, ne fait pas partie des 7 enseignes Kajirō.
+EXCLUDED_RESTAURANT_IDS: set[int] = {6328}
+
 
 class ZeltyError(RuntimeError):
     pass
@@ -100,9 +104,12 @@ def list_restaurants() -> pd.DataFrame:
     for r in items:
         if r.get("disable"):
             continue
+        rid = int(r["id"])
+        if rid in EXCLUDED_RESTAURANT_IDS:
+            continue
         rows.append({
-            "id": int(r["id"]),
-            "name": r.get("name") or f"Resto {r['id']}",
+            "id": rid,
+            "name": r.get("name") or f"Resto {rid}",
             "currency": r.get("currency", "EUR"),
             "country": r.get("country_code", "FR"),
         })

@@ -10,7 +10,7 @@ import streamlit as st
 
 import periods
 import zelty_client
-from auth import check_password, logout
+from auth import logout, require_login
 from theme import COLORS, header, inject_css
 
 FAVICON = Path(__file__).parent / "assets" / "favicon.svg"
@@ -25,8 +25,7 @@ st.set_page_config(
 )
 inject_css()
 
-if not check_password():
-    st.stop()
+user = require_login()
 
 header()
 
@@ -361,9 +360,25 @@ with tab_produits:
 # ------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### Kajirō Analytics")
+    # User card
+    if user.get("picture"):
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:10px;padding:8px 0;'>"
+            f"<img src='{user['picture']}' style='width:32px;height:32px;border-radius:50%;border:1px solid {COLORS['border']};'>"
+            f"<div><div style='color:{COLORS['white']};font-size:12px;font-weight:600;'>{user['name']}</div>"
+            f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.05em;'>{user['role'].upper()}</div></div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"<div style='color:{COLORS['white']};font-size:12px;'>{user['name']}</div>"
+            f"<div style='color:{COLORS['muted']};font-size:10px;'>{user['role'].upper()} · {user['email']}</div>",
+            unsafe_allow_html=True,
+        )
     st.markdown(
-        f"<div style='color:{COLORS['muted']};font-size:11px;'>"
-        f"{len(restos_df)} restaurants connectés via Zelty (v{zelty_client.API_VERSION})"
+        f"<div style='color:{COLORS['muted']};font-size:11px;margin-top:8px;'>"
+        f"{len(restos_df)} restaurants · Zelty v{zelty_client.API_VERSION}"
         f"</div>",
         unsafe_allow_html=True,
     )

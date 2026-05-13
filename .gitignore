@@ -1,8 +1,6 @@
 # --- Secrets (NE JAMAIS COMMITER) ---
 .streamlit/secrets.toml
-.streamlit/secrets.*
 secrets.toml
-secrets.*
 *.secret
 *.secrets
 .env
@@ -10,6 +8,7 @@ secrets.*
 clezelty*
 *api_key*
 *apikey*
+# Note: .streamlit/secrets.example.toml est commité (template public)
 
 # --- Local Claude ---
 .claude/
