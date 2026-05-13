@@ -16,8 +16,10 @@ TTL_HOURS = 12
 TTL_SECONDS = TTL_HOURS * 3600
 
 
-@st.cache_resource
 def _cookies() -> stx.CookieManager:
+    # NOTE: ne pas mettre dans @st.cache_resource — CookieManager est un widget,
+    # Streamlit le détecte et lève CachedWidgetWarning. La `key` suffit à garder
+    # le même composant entre les reruns.
     return stx.CookieManager(key="kj_cookie_mgr")
 
 

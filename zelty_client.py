@@ -1,17 +1,20 @@
-"""Client API Zelty pour le dashboard Kajiro.
+"""Client API Zelty (v2.10).
 
-Doc: https://docs.zelty.fr (gated). Le client cible la base publique https://api.zelty.fr
-avec auth Basic (la clé Zelty est déjà du base64 `chain_id:secret`). Endpoints typiques:
-  GET /v2/restaurants
-  GET /v2/orders?status=255&restaurant_id=...&date_from=...&date_to=...&page=...&per_page=...
+Endpoints confirmés:
+  GET /2.10/restaurants                 → liste {restaurants: [...]}
+  GET /2.10/orders?from=&to=&restaurant_id=  → résumés (PAS de lignes produits)
+  GET /2.10/closures?restaurant_id=&from=&to= → CA quotidien {closures: [...]}
+  GET /2.10/catalogs                    → catalogues de menus
+  GET /2.10/catalogs/{id}               → catalogue détaillé avec items
 
-Si l'API réelle diffère, ajuster ENDPOINTS ci-dessous sans toucher au reste.
+NOTE: l'endpoint pour les ventes par produit (best sellers) n'a pas été trouvé
+dans les routes publiques. En attendant: fallback CSV (export Zelty BO).
 """
 from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -26,18 +29,9 @@ from tenacity import (
 )
 
 PARIS = ZoneInfo("Europe/Paris")
-
-ENDPOINTS = {
-    "restaurants": "/v1/restaurants",
-    "orders": "/v1/orders",
-    "articles": "/v1/articles",
-}
-
-# Status code "fermé/payé" — confirmé par la doc KEYBAN
-ORDER_STATUS_CLOSED = 255
-
+API_VERSION = "2.10"
 PER_PAGE = 200
-MAX_PARALLEL = 4
+MAX_PARALLEL = 3
 
 
 class ZeltyError(RuntimeError):
@@ -53,7 +47,7 @@ def _secret(key: str, default: str | None = None) -> str | None:
 
 def _headers() -> dict[str, str]:
     api_key = _secret("ZELTY_API_KEY")
-    scheme = _secret("ZELTY_AUTH_SCHEME", "Basic")
+    scheme = _secret("ZELTY_AUTH_SCHEME", "Bearer")
     if not api_key:
         raise ZeltyError("ZELTY_API_KEY manquant dans .streamlit/secrets.toml")
     return {
@@ -90,134 +84,135 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Any:
         raise ZeltyError(f"Réponse non-JSON sur {path}: {resp.text[:300]}") from e
 
 
-def _unwrap_list(payload: Any) -> list[dict]:
-    """Zelty enveloppe parfois la liste dans {data: [...]} ou {results: [...]}."""
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        for k in ("data", "results", "items", "restaurants", "orders", "articles"):
-            if isinstance(payload.get(k), list):
-                return payload[k]
-    return []
+def _fmt_date(d: date) -> str:
+    return d.strftime("%Y-%m-%d")
 
 
+# ---------------------------------------------------------------------------
+# Restaurants
+# ---------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def list_restaurants() -> pd.DataFrame:
-    """Liste les restaurants accessibles par la clé groupe."""
-    raw = _get(ENDPOINTS["restaurants"])
-    items = _unwrap_list(raw)
+    """Liste des restaurants accessibles avec la clé groupe."""
+    payload = _get(f"/{API_VERSION}/restaurants")
+    items = payload.get("restaurants", []) if isinstance(payload, dict) else []
     rows = []
     for r in items:
+        if r.get("disable"):
+            continue
         rows.append({
-            "id": r.get("id") or r.get("restaurant_id"),
-            "name": r.get("name") or r.get("label") or f"Resto {r.get('id')}",
-            "city": r.get("city") or r.get("address", {}).get("city") if isinstance(r.get("address"), dict) else r.get("city"),
+            "id": int(r["id"]),
+            "name": r.get("name") or f"Resto {r['id']}",
+            "currency": r.get("currency", "EUR"),
+            "country": r.get("country_code", "FR"),
         })
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    df = df.dropna(subset=["id"]).reset_index(drop=True)
-    df["id"] = df["id"].astype(int)
-    return df
+    return df.sort_values("name").reset_index(drop=True)
 
 
-def _fmt_date(d: date | datetime) -> str:
-    if isinstance(d, datetime):
-        return d.astimezone(PARIS).strftime("%Y-%m-%dT%H:%M:%S")
-    return d.strftime("%Y-%m-%d")
-
-
-def _fetch_orders_page(restaurant_id: int, date_from: date, date_to: date, page: int) -> list[dict]:
-    params = {
+# ---------------------------------------------------------------------------
+# Closures (CA quotidien par restaurant)
+# ---------------------------------------------------------------------------
+def _fetch_closures_one(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
+    payload = _get(f"/{API_VERSION}/closures", params={
         "restaurant_id": restaurant_id,
-        "status": ORDER_STATUS_CLOSED,
-        "date_from": _fmt_date(date_from),
-        "date_to": _fmt_date(date_to),
-        "page": page,
-        "per_page": PER_PAGE,
-    }
-    payload = _get(ENDPOINTS["orders"], params=params)
-    return _unwrap_list(payload)
-
-
-def _fetch_all_orders(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
-    all_orders: list[dict] = []
-    page = 1
-    while True:
-        batch = _fetch_orders_page(restaurant_id, date_from, date_to, page)
-        if not batch:
-            break
-        all_orders.extend(batch)
-        if len(batch) < PER_PAGE:
-            break
-        page += 1
-        if page > 200:  # safety
-            break
-    return all_orders
+        "from": _fmt_date(date_from),
+        "to": _fmt_date(date_to),
+    })
+    return payload.get("closures", []) if isinstance(payload, dict) else []
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_sales_by_product(
+def fetch_closures(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
 ) -> pd.DataFrame:
-    """Agrège les ventes par produit sur la période + ensemble de restaurants.
+    """CA et taxes quotidiens par restaurant.
 
-    Retourne un DataFrame: nom, qte, ht, ttc, prix_moy, pct_ca, pct_qte
+    Colonnes : date, restaurant_id, turnover (€ TTC), taxes (€).
+    Les montants Zelty sont en centimes — convertis en euros ici.
     """
     if not restaurant_ids:
-        return pd.DataFrame(columns=["nom", "qte", "ht", "ttc", "prix_moy", "pct_ca", "pct_qte"])
+        return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
 
-    rows_by_product: dict[str, dict[str, float]] = {}
-
-    def process_orders(orders: list[dict]) -> None:
-        for o in orders:
-            lines = o.get("lines") or o.get("items") or o.get("order_lines") or []
-            for line in lines:
-                name = (line.get("name") or line.get("article_name") or line.get("label") or "").strip()
-                if not name:
-                    continue
-                qty = _to_float(line.get("quantity") or line.get("qty") or 0)
-                if qty <= 0:
-                    continue
-                ht = _to_float(line.get("total_ht") or line.get("ht") or line.get("amount_ht") or 0) / 100.0
-                ttc = _to_float(line.get("total") or line.get("total_ttc") or line.get("amount") or 0) / 100.0
-                if ht == 0 and ttc > 0:
-                    # estimation HT à 10% TVA resto si HT non fourni
-                    ht = ttc / 1.10
-                acc = rows_by_product.setdefault(name, {"qte": 0.0, "ht": 0.0, "ttc": 0.0})
-                acc["qte"] += qty
-                acc["ht"] += ht
-                acc["ttc"] += ttc
-
+    all_rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
         futures = {
-            pool.submit(_fetch_all_orders, rid, date_from, date_to): rid
+            pool.submit(_fetch_closures_one, rid, date_from, date_to): rid
             for rid in restaurant_ids
         }
         for fut in as_completed(futures):
             try:
-                process_orders(fut.result())
+                for c in fut.result():
+                    all_rows.append({
+                        "date": c.get("date"),
+                        "restaurant_id": int(c.get("id_restaurant")),
+                        "turnover": _to_float(c.get("turnover")) / 100.0,
+                        "taxes": _to_float(c.get("taxes")) / 100.0,
+                    })
             except ZeltyError as e:
                 st.warning(f"Restaurant {futures[fut]} — {e}")
-
-    if not rows_by_product:
-        return pd.DataFrame(columns=["nom", "qte", "ht", "ttc", "prix_moy", "pct_ca", "pct_qte"])
-
-    df = pd.DataFrame([
-        {"nom": name, "qte": int(v["qte"]), "ht": v["ht"], "ttc": v["ttc"]}
-        for name, v in rows_by_product.items()
-    ])
-    total_ht = df["ht"].sum() or 1
-    total_qte = df["qte"].sum() or 1
-    df["prix_moy"] = df.apply(lambda r: r["ht"] / r["qte"] if r["qte"] else 0, axis=1)
-    df["pct_ca"] = df["ht"] / total_ht * 100
-    df["pct_qte"] = df["qte"] / total_qte * 100
-    df = df.sort_values("ht", ascending=False).reset_index(drop=True)
-    return df
+    if not all_rows:
+        return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
+    return pd.DataFrame(all_rows).sort_values(["restaurant_id", "date"]).reset_index(drop=True)
 
 
+# ---------------------------------------------------------------------------
+# Orders (résumés uniquement — pas de lignes produits dans v2.10)
+# ---------------------------------------------------------------------------
+def _fetch_orders_one(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
+    payload = _get(f"/{API_VERSION}/orders", params={
+        "restaurant_id": restaurant_id,
+        "from": _fmt_date(date_from),
+        "to": _fmt_date(date_to),
+    })
+    return payload.get("orders", []) if isinstance(payload, dict) else []
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_orders_summary(
+    restaurant_ids: tuple[int, ...],
+    date_from: date,
+    date_to: date,
+) -> pd.DataFrame:
+    """Résumés de commandes : nb commandes, CA HT, CA TTC, mode, source par resto."""
+    if not restaurant_ids:
+        return pd.DataFrame(columns=["restaurant_id", "n_orders", "ht", "ttc", "by_mode"])
+
+    rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
+        futures = {
+            pool.submit(_fetch_orders_one, rid, date_from, date_to): rid
+            for rid in restaurant_ids
+        }
+        for fut in as_completed(futures):
+            rid = futures[fut]
+            try:
+                orders = fut.result()
+            except ZeltyError as e:
+                st.warning(f"Restaurant {rid} — {e}")
+                continue
+            for o in orders:
+                price = o.get("price") or {}
+                rows.append({
+                    "restaurant_id": int(o.get("id_restaurant", rid)),
+                    "order_id": o.get("id"),
+                    "closed_at": o.get("closed_at"),
+                    "mode": o.get("mode"),
+                    "source": o.get("source"),
+                    "origin": o.get("origin_name"),
+                    "ttc": _to_float(price.get("final_amount_inc_tax")) / 100.0,
+                    "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
+                })
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def _to_float(v: Any) -> float:
     try:
         return float(v)
@@ -226,11 +221,59 @@ def _to_float(v: Any) -> float:
 
 
 def health_check() -> tuple[bool, str]:
-    """Test la connexion à l'API. Retourne (ok, message)."""
+    """Test la connexion à l'API."""
     try:
         df = list_restaurants()
-        return True, f"OK — {len(df)} restaurant(s) accessible(s)"
+        return True, f"OK — {len(df)} restaurant(s)"
     except ZeltyError as e:
         return False, str(e)
     except Exception as e:  # noqa: BLE001
-        return False, f"Erreur inattendue: {e}"
+        return False, f"Erreur: {e}"
+
+
+# ---------------------------------------------------------------------------
+# CSV fallback (compatibilité avec dashboard Bron original)
+# ---------------------------------------------------------------------------
+def parse_zelty_csv(text: str) -> pd.DataFrame:
+    """Parse un export CSV Zelty 'Les Produits' (format BO)."""
+    import csv
+    import io
+
+    # Skip "sep=" first line if present
+    if text.startswith("sep="):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    reader = csv.reader(io.StringIO(text))
+    rows = []
+    next(reader, None)  # header
+    for r in reader:
+        if not r or not r[0].strip():
+            continue
+        nom = r[0].strip()
+        qte = _parse_int(r[1] if len(r) > 1 else "")
+        pct_qte = _parse_float((r[2] if len(r) > 2 else "").replace("%", ""))
+        pct_ca = _parse_float((r[3] if len(r) > 3 else "").replace("%", ""))
+        ht = _parse_float(r[5] if len(r) > 5 else "")
+        if nom and (qte > 0 or ht > 0):
+            rows.append({
+                "nom": nom,
+                "qte": qte,
+                "ht": ht,
+                "pct_ca": pct_ca,
+                "pct_qte": pct_qte,
+                "prix_moy": ht / qte if qte else 0,
+            })
+    return pd.DataFrame(rows)
+
+
+def _parse_int(s: str) -> int:
+    try:
+        return int(str(s).strip().replace(" ", "").replace(",", "."))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _parse_float(s: str) -> float:
+    try:
+        return float(str(s).strip().replace(" ", "").replace(",", "."))
+    except (ValueError, TypeError):
+        return 0.0
