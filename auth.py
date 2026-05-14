@@ -23,7 +23,8 @@ BOOTSTRAP_ADMIN_EMAIL = "hello@kajirosushi.com"
 BOOTSTRAP_DEFAULT_PASSWORD = "kajiro2026"  # ⚠ à changer après 1ère connexion
 
 COOKIE_NAME = "kj_session"
-TTL_HOURS = 12
+TTL_DAYS = 30
+TTL_HOURS = TTL_DAYS * 24
 
 
 def _cookies() -> stx.CookieManager:

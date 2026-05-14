@@ -318,6 +318,19 @@ def _css() -> str:
 
 
 def inject_css() -> None:
+    # Tags PWA — manifest + apple-touch-icon + theme-color
+    # Les fichiers static/* sont servis par Streamlit via enableStaticServing=true
+    pwa_head = (
+        '<link rel="manifest" href="./app/static/manifest.json">'
+        '<link rel="apple-touch-icon" sizes="180x180" href="./app/static/icon-180.png">'
+        '<link rel="icon" type="image/png" sizes="192x192" href="./app/static/icon-192.png">'
+        '<meta name="theme-color" content="#ED7553">'
+        '<meta name="apple-mobile-web-app-capable" content="yes">'
+        '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+        '<meta name="apple-mobile-web-app-title" content="Kajirō">'
+        '<meta name="mobile-web-app-capable" content="yes">'
+    )
+    st.markdown(pwa_head, unsafe_allow_html=True)
     st.markdown(f"<style>{_css()}</style>", unsafe_allow_html=True)
 
 
