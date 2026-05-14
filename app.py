@@ -10,6 +10,7 @@ import streamlit as st
 
 import backfill
 import cache
+import copilots
 import periods
 import zelty_client
 from auth import allowed_restaurant_ids, logout, require_login
@@ -243,8 +244,8 @@ st.caption(
 # ------------------------------------------------------------------
 # Onglets
 # ------------------------------------------------------------------
-tab_dashboard, tab_produits, tab_freq, tab_sources, tab_clients = st.tabs(
-    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES", "CLIENTS"]
+tab_dashboard, tab_produits, tab_freq, tab_sources, tab_clients, tab_board = st.tabs(
+    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES", "CLIENTS", "BOARD"]
 )
 
 # =============================================================================
@@ -292,6 +293,10 @@ with tab_dashboard:
     st.caption(
         f"vs période précédente : {prev.start:%d/%m} → {prev.end:%d/%m} ({prev.days} j)"
     )
+
+    # Copilote Dashboard
+    co = copilots.dashboard_copilot(orders, orders_prev, period.days)
+    copilots.render_copilot_card("Réseau", co["status"], co["message"], co["recommendation"])
 
     # === Indicateurs clients & remises (si data dispo) ===
     if not orders.empty and "customer_id" in orders.columns:
@@ -499,6 +504,10 @@ with tab_produits:
     st.markdown("")
     render_product_table(filtered.to_dict("records"), sort_key=metric, show_photos=True)
 
+    # Copilote Produits
+    co = copilots.products_copilot(data, period.days, len(selected_ids))
+    copilots.render_copilot_card("Produits", co["status"], co["message"], co["recommendation"])
+
     # =========================================================================
     # COPILOTE PRODUITS — identifie les sous-performants + lecture de complexité
     # =========================================================================
@@ -656,6 +665,9 @@ with tab_produits:
                     f"</div></div>".replace(",", " "),
                     unsafe_allow_html=True,
                 )
+            # Copilote Remises
+            co = copilots.discounts_copilot(orders)
+            copilots.render_copilot_card("Remises", co["status"], co["message"], co["recommendation"])
 
 # =============================================================================
 # TAB 3 — Fréquentation (jours × heures)
@@ -781,6 +793,9 @@ with tab_freq:
         fig_heat.update_traces(textfont=dict(size=10))
         st.plotly_chart(fig_heat, use_container_width=True)
 
+        co = copilots.frequentation_copilot(orders)
+        copilots.render_copilot_card("Fréquentation", co["status"], co["message"], co["recommendation"])
+
 
 # =============================================================================
 # TAB 4 — Origines des ventes (canaux)
@@ -879,6 +894,9 @@ with tab_sources:
         )
         st.plotly_chart(fig_donut, use_container_width=True)
 
+        co = copilots.sources_copilot(orders)
+        copilots.render_copilot_card("Origines", co["status"], co["message"], co["recommendation"])
+
 
 # =============================================================================
 # TAB 5 — Clients (style Bron)
@@ -903,6 +921,10 @@ with tab_clients:
             f"{period.start:%a %d %b} → {period.end:%a %d %b}</div>",
             unsafe_allow_html=True,
         )
+
+        # Copilote Clients (en haut, vue d'ensemble)
+        co = copilots.clients_copilot(orders)
+        copilots.render_copilot_card("Clients", co["status"], co["message"], co["recommendation"])
 
         # === KPIs principaux ===
         n_id = df_id["customer_id"].nunique()
@@ -997,6 +1019,140 @@ with tab_clients:
                     f"{ca_fmt}</div></div>",
                     unsafe_allow_html=True,
                 )
+
+
+# =============================================================================
+# TAB 6 — BOARD : synthèse globale + plan d'action CT/MT/LT
+# =============================================================================
+with tab_board:
+    products_df = zelty_client.fetch_product_sales(selected_ids, period.start, period.end)
+    co_dash = copilots.dashboard_copilot(orders, orders_prev, period.days)
+    co_prod = copilots.products_copilot(products_df, period.days, len(selected_ids)) if not products_df.empty else None
+    co_freq = copilots.frequentation_copilot(orders)
+    co_src = copilots.sources_copilot(orders)
+    co_cli = copilots.clients_copilot(orders)
+    co_disc = copilots.discounts_copilot(orders)
+
+    st.markdown(
+        f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;"
+        f"text-transform:uppercase;margin-bottom:2px;'>BOARD STRATÉGIQUE</div>"
+        f"<div style='color:{COLORS['white']};font-size:22px;font-weight:700;margin-bottom:6px;'>"
+        f"Vue d'ensemble + plan d'actions</div>"
+        f"<div style='color:{COLORS['muted']};font-size:12px;margin-bottom:18px;'>"
+        f"Synthèse 1-vue de toute la période · {period.start:%d/%m} → {period.end:%d/%m} "
+        f"· {len(selected_ids)}/{len(all_names)} restos</div>",
+        unsafe_allow_html=True,
+    )
+
+    # === Score global ===
+    statuses = [c.get("status") for c in (co_dash, co_prod, co_freq, co_src, co_cli, co_disc) if c]
+    n_alerte = statuses.count("ALERTE")
+    n_atten = statuses.count("ATTENTION")
+    n_norm = statuses.count("NORMAL")
+    if n_alerte > 0:
+        score_label, score_color, score_msg = "🔴 Situation à traiter", COLORS["coral"], f"{n_alerte} alerte(s) critique(s)"
+    elif n_atten >= 2:
+        score_label, score_color, score_msg = "🟠 Plusieurs signaux faibles", COLORS["amber"], f"{n_atten} module(s) en zone d'attention"
+    else:
+        score_label, score_color, score_msg = "🟢 Réseau en bonne santé", "#34D399", f"{n_norm} module(s) au vert"
+
+    st.markdown(
+        f"<div style='background:{COLORS['surface']};border:1px solid {score_color}55;border-radius:12px;"
+        f"padding:18px 20px;margin-bottom:18px;'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+        f"<div><div style='color:{score_color};font-size:18px;font-weight:700;'>{score_label}</div>"
+        f"<div style='color:{COLORS['muted']};font-size:13px;margin-top:4px;'>{score_msg}</div></div>"
+        f"<div style='text-align:right;'>"
+        f"<div style='color:{COLORS['white']};font-size:11px;letter-spacing:0.08em;'>"
+        f"🔴 {n_alerte} · 🟠 {n_atten} · 🟢 {n_norm}</div></div></div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # === Synthèse par module (tous les copilotes empilés) ===
+    st.markdown(
+        f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+        f"text-transform:uppercase;margin:24px 0 6px;'>Synthèse par module</div>",
+        unsafe_allow_html=True,
+    )
+    for title, co in [
+        ("Dashboard", co_dash), ("Produits", co_prod),
+        ("Fréquentation", co_freq), ("Origines", co_src),
+        ("Clients", co_cli), ("Remises", co_disc),
+    ]:
+        if co:
+            copilots.render_copilot_card(title, co["status"], co["message"], co["recommendation"])
+
+    # === Plan d'actions ===
+    st.markdown(
+        f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+        f"text-transform:uppercase;margin:24px 0 6px;'>Plan d'actions priorisé</div>",
+        unsafe_allow_html=True,
+    )
+
+    actions_ct = []  # court terme < 2 semaines
+    actions_mt = []  # moyen terme 1-3 mois
+    actions_lt = []  # long terme > 3 mois
+
+    # Règles de priorisation basées sur les statuts copilotes
+    if co_cli and co_cli["status"] in {"ALERTE", "ATTENTION"}:
+        actions_ct.append("Activer la collecte d'opt-in client (email obligatoire sur ticket borne / web).")
+        actions_mt.append("Lancer la première campagne CRM : email/SMS aux inactifs > 60j avec offre de retour.")
+        actions_lt.append("Construire un programme de fidélité simple (X € = 1 point, 100 points = 1 plat offert).")
+    if co_disc and co_disc["status"] == "ALERTE":
+        actions_ct.append("Audit immédiat des remises du mois — identifier les abus / motifs flous.")
+        actions_mt.append("Plafonner les remises par employé via le BO Zelty.")
+    if co_prod and co_prod["status"] in {"ALERTE", "ATTENTION"}:
+        actions_ct.append("Lister les 10 produits les plus faibles à retirer ou requalifier ce mois-ci.")
+        actions_mt.append("Refonte progressive de la carte : viser < 80 références totales.")
+    if co_freq and "weak_hours" in (co_freq.get("recommendation") or "").lower() or "happy" in (co_freq.get("recommendation") or "").lower():
+        actions_ct.append("Tester un Happy Hour sur les créneaux faibles identifiés (14h-16h typiquement).")
+    if co_src and "livraison" in (co_src.get("recommendation") or "").lower():
+        actions_ct.append("Pousser le canal direct : 5% de remise première commande sur le site Zelty.")
+        actions_lt.append("Évaluer si une app de commande directe (web/iOS) vaut l'investissement.")
+    if co_dash and co_dash["status"] == "ALERTE":
+        actions_ct.append("Réunion d'urgence directeurs restos en repli — identifier les causes (mauvaise météo? travaux? équipe?).")
+    if co_dash and co_dash["status"] == "NORMAL" and not actions_ct:
+        actions_ct.append("Pas d'urgence — capitaliser sur la dynamique en doublant les actions qui marchent.")
+
+    # Si peu d'actions, ajouter des actions génériques de progression
+    if len(actions_lt) < 2:
+        actions_lt.append("Webhook Zelty `order.ended` → analytics temps réel (élimine le re-sync today).")
+    if len(actions_mt) < 2:
+        actions_mt.append("Tableau de bord par franchisé (envoi auto hebdomadaire d'un PDF synthèse).")
+
+    plan_cols = st.columns(3)
+    plan_data = [
+        ("⚡ Court terme", "< 2 semaines", actions_ct, COLORS["coral"]),
+        ("📅 Moyen terme", "1-3 mois", actions_mt, COLORS["amber"]),
+        ("🎯 Long terme", "> 3 mois", actions_lt, "#34D399"),
+    ]
+    for col, (title, sub, items, color) in zip(plan_cols, plan_data):
+        with col:
+            st.markdown(
+                f"<div style='background:{COLORS['surface']};border:1px solid {color}33;border-radius:10px;padding:14px 16px;height:100%;'>"
+                f"<div style='color:{color};font-size:13px;font-weight:700;margin-bottom:2px;'>{title}</div>"
+                f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.08em;margin-bottom:12px;'>{sub.upper()}</div>",
+                unsafe_allow_html=True,
+            )
+            if not items:
+                st.markdown(
+                    f"<div style='color:{COLORS['muted']};font-size:12px;font-style:italic;'>"
+                    f"Aucune action urgente sur cet horizon.</div>",
+                    unsafe_allow_html=True,
+                )
+            for it in items:
+                st.markdown(
+                    f"<div style='color:{COLORS['white']};font-size:12px;line-height:1.5;"
+                    f"padding:8px 0;border-bottom:1px solid {COLORS['border']};'>"
+                    f"<span style='color:{color};margin-right:6px;'>▸</span>{it}</div>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.caption(
+        "Plan généré dynamiquement depuis l'état actuel des 6 copilotes. "
+        "Les actions disparaissent dès que la situation correspondante se normalise."
+    )
 
 
 # ------------------------------------------------------------------
