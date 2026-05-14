@@ -82,7 +82,9 @@ def users_dialog(all_restos: list[dict]) -> None:
     )
     selected_rids: list[int] | None = None
     if scope == "Sélection":
-        current_rids = set(int(r) for r in (existing.get("restaurant_ids") or []))
+        current_rids = set(
+            int(r) for r in ((existing or {}).get("restaurant_ids") or [])
+        )
         chosen_names = st.multiselect(
             "Restaurants autorisés",
             options=[r["name"] for r in all_restos],
