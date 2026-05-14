@@ -171,26 +171,27 @@ def _sync_closures_for_resto(rid: int, date_from: date, date_to: date) -> None:
                     cache.mark_synced("closures", rid, synced)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_closures(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
-    on_progress: Callable[[str], None] | None = None,
+    _on_progress: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
-    """CA et taxes quotidiens — cache-first, serial."""
+    """CA et taxes quotidiens — cache mémoire 5 min + DB Supabase persistante."""
     if not restaurant_ids:
         return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
 
     cache.init_db()
     n = len(restaurant_ids)
     for i, rid in enumerate(restaurant_ids, start=1):
-        if on_progress:
-            on_progress(f"💰 Closures · resto {i}/{n} (id {rid})")
+        if _on_progress:
+            _on_progress(f"💰 Closures · resto {i}/{n} (id {rid})")
         try:
             _sync_closures_for_resto(rid, date_from, date_to)
         except ZeltyError as e:
-            if on_progress:
-                on_progress(f"⚠ resto {rid} closures : {e}")
+            if _on_progress:
+                _on_progress(f"⚠ resto {rid} closures : {e}")
 
     rows = cache.query_closures(list(restaurant_ids), date_from, date_to)
     if not rows:
@@ -276,26 +277,27 @@ def _sync_orders_for_resto(
                     cache.mark_synced("orders", rid, synced)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_orders_summary(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
-    on_progress: Callable[[str], None] | None = None,
+    _on_progress: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
-    """Commandes — cache-first, serial."""
+    """Commandes — cache mémoire 5 min + DB Supabase persistante."""
     if not restaurant_ids:
         return pd.DataFrame()
 
     cache.init_db()
     n = len(restaurant_ids)
     for i, rid in enumerate(restaurant_ids, start=1):
-        if on_progress:
-            on_progress(f"🧾 Commandes · resto {i}/{n} (id {rid})")
+        if _on_progress:
+            _on_progress(f"🧾 Commandes · resto {i}/{n} (id {rid})")
         try:
-            _sync_orders_for_resto(rid, date_from, date_to, on_progress=on_progress)
+            _sync_orders_for_resto(rid, date_from, date_to, on_progress=_on_progress)
         except ZeltyError as e:
-            if on_progress:
-                on_progress(f"⚠ resto {rid} orders : {e}")
+            if _on_progress:
+                _on_progress(f"⚠ resto {rid} orders : {e}")
 
     rows = cache.query_orders(list(restaurant_ids), date_from, date_to)
     return pd.DataFrame(rows) if rows else pd.DataFrame()

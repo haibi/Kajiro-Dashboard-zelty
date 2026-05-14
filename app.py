@@ -145,32 +145,65 @@ if restos_df.empty:
 # ------------------------------------------------------------------
 # Filtres globaux
 # ------------------------------------------------------------------
-fc1, fc2 = st.columns([1.2, 3])
+# Boutons période rapide
+QUICK_PERIODS = [
+    ("Jour", "Aujourd'hui"),
+    ("Semaine", "Cette semaine"),
+    ("Mois", "Mois en cours"),
+    ("M-1", "Mois précédent"),
+    ("Année", "Année en cours"),
+    ("Perso", "Personnalisé"),
+]
+if "period_preset" not in st.session_state:
+    st.session_state["period_preset"] = "Mois en cours"
 
-with fc1:
-    preset = st.selectbox("Période", periods.PRESETS, index=0, key="period_preset")
-    custom_range = None
-    if preset == "Personnalisé":
-        today = date.today()
-        custom_range = st.date_input(
-            "Plage",
-            value=(today.replace(day=1), today),
-            key="period_custom",
-            format="DD/MM/YYYY",
-        )
-        if not isinstance(custom_range, tuple) or len(custom_range) != 2:
-            st.info("Sélectionne une date de début ET de fin.")
-            st.stop()
-    period = periods.from_preset(preset, custom_range)
+st.markdown(
+    f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+    f"text-transform:uppercase;margin-bottom:6px;'>Période</div>",
+    unsafe_allow_html=True,
+)
+period_cols = st.columns(len(QUICK_PERIODS) + 2)
+for i, (label, value) in enumerate(QUICK_PERIODS):
+    is_active = st.session_state["period_preset"] == value
+    if period_cols[i].button(
+        label,
+        key=f"period_btn_{value}",
+        use_container_width=True,
+        type="primary" if is_active else "secondary",
+    ):
+        st.session_state["period_preset"] = value
+        st.rerun()
 
-with fc2:
-    all_names = restos_df["name"].tolist()
-    selected_names = st.multiselect(
-        "Restaurants",
-        all_names,
-        default=all_names,
-        key="restos",
+preset = st.session_state["period_preset"]
+custom_range = None
+if preset == "Personnalisé":
+    today = date.today()
+    custom_range = st.date_input(
+        "Plage",
+        value=(today.replace(day=1), today),
+        key="period_custom",
+        format="DD/MM/YYYY",
+        label_visibility="collapsed",
     )
+    if not isinstance(custom_range, tuple) or len(custom_range) != 2:
+        st.info("Sélectionne une date de début ET de fin.")
+        st.stop()
+period = periods.from_preset(preset, custom_range)
+
+# Sélection restaurants
+st.markdown(
+    f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+    f"text-transform:uppercase;margin:14px 0 6px;'>Restaurants</div>",
+    unsafe_allow_html=True,
+)
+all_names = restos_df["name"].tolist()
+selected_names = st.multiselect(
+    "Restaurants",
+    all_names,
+    default=all_names,
+    key="restos",
+    label_visibility="collapsed",
+)
 
 if not selected_names:
     st.warning("Sélectionne au moins un restaurant.")
@@ -305,21 +338,13 @@ with tab_reseau:
         st.plotly_chart(fig, use_container_width=True)
 
 # =============================================================================
-# TAB 2 — Produits (CSV fallback — l'endpoint Zelty dishes n'est pas trouvé)
+# TAB 2 — Produits (CSV — l'endpoint Zelty dishes n'est pas trouvé)
 # =============================================================================
 with tab_produits:
-    st.markdown(
-        f"<div style='background:{COLORS['surface']};border:1px solid {COLORS['border']};"
-        f"border-radius:10px;padding:12px 16px;margin-bottom:18px;'>"
-        f"<div style='color:{COLORS['coral']};font-size:11px;font-weight:600;"
-        f"letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;'>"
-        f"⚠ Données produit · mode CSV</div>"
-        f"<div style='color:{COLORS['muted']};font-size:12px;line-height:1.5;'>"
-        f"L'API Zelty v2.10 ne semble pas exposer les ventes par produit via les endpoints standards "
-        f"(<code>/orders</code> ne renvoie que des résumés). En attendant d'identifier le bon endpoint, "
-        f"importe ici les exports CSV <em>Les Produits</em> du back-office Zelty.</div>"
-        f"</div>",
-        unsafe_allow_html=True,
+    # Bandeau discret
+    st.caption(
+        "⚠ L'API Zelty v2.10 n'expose pas les lignes de commande. "
+        "Importe les exports CSV « Les Produits » du back-office."
     )
 
     # Initialisation du store CSV en session
@@ -368,7 +393,7 @@ with tab_produits:
     if not selected_csv:
         st.stop()
 
-    # Fusion
+    # Fusion : commandes + CA agrégés par nom de produit
     merged: dict[str, dict[str, float]] = {}
     for k in selected_csv:
         for _, row in csv_data[k].iterrows():
@@ -383,53 +408,82 @@ with tab_produits:
     total_ht = data["ht"].sum() or 1
     data["pct_ca"] = data["ht"] / total_ht * 100
 
-    # Contrôles tri / topN / recherche
-    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-    with c1:
-        search = st.text_input("Rechercher", "", placeholder="Filtrer par nom…", label_visibility="collapsed")
-    with c2:
+    # Header : titre + toggles à droite (style Bron)
+    htop, hctl = st.columns([2, 3])
+    with htop:
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;"
+            f"text-transform:uppercase;margin-bottom:2px;'>MODULE PRODUITS</div>"
+            f"<div style='color:{COLORS['white']};font-size:20px;font-weight:700;margin-bottom:2px;'>"
+            f"Top / Flop produits</div>"
+            f"<div style='color:{COLORS['muted']};font-size:11px;'>"
+            f"{period.start:%a %d %b} → {period.end:%a %d %b} · {len(data)} produits</div>",
+            unsafe_allow_html=True,
+        )
+
+    # Toggles
+    if "prod_view" not in st.session_state:
+        st.session_state["prod_view"] = "TOP"
+    if "prod_metric" not in st.session_state:
+        st.session_state["prod_metric"] = "ht"
+
+    with hctl:
+        tc1, tc2, tc3, tc4 = st.columns([1, 1, 1, 1])
+        for label, val, key, state_key in [
+            ("TOP", "TOP", "top", "prod_view"),
+            ("FLOP", "FLOP", "flop", "prod_view"),
+            ("CA", "ht", "ca", "prod_metric"),
+            ("VOLUME", "qte", "vol", "prod_metric"),
+        ]:
+            with [tc1, tc2, tc3, tc4][["top", "flop", "ca", "vol"].index(key)]:
+                active = st.session_state[state_key] == val
+                if st.button(label, key=f"prod_{key}",
+                              type="primary" if active else "secondary",
+                              use_container_width=True):
+                    st.session_state[state_key] = val
+                    st.rerun()
+
+    view = st.session_state["prod_view"]       # TOP ou FLOP
+    metric = st.session_state["prod_metric"]   # 'ht' ou 'qte'
+
+    # Recherche + nombre à afficher
+    fc1, fc2 = st.columns([3, 1])
+    with fc1:
+        search = st.text_input("Rechercher", "", placeholder="Filtrer par nom de produit…",
+                                label_visibility="collapsed")
+    with fc2:
         top_n = st.selectbox(
-            "Top N", TOP_PRESETS + [9999], index=2,
-            format_func=lambda n: "TOUT" if n == 9999 else f"TOP {n}",
-        )
-    with c3:
-        sort_by = st.selectbox(
-            "Trier par", ["ht", "qte", "prix_moy", "pct_ca"],
-            format_func={"ht": "CA HT", "qte": "Unités", "prix_moy": "Prix moy.", "pct_ca": "% CA"}.get,
-        )
-    with c4:
-        sort_dir = st.selectbox(
-            "Sens", ["desc", "asc"],
-            format_func={"desc": "↓", "asc": "↑"}.get,
+            "Combien", [10, 20, 50, 100, 9999], index=1,
+            format_func=lambda n: "Tout" if n == 9999 else f"Top {n}",
+            label_visibility="collapsed",
         )
 
     filtered = data.copy()
     if search:
         filtered = filtered[filtered["nom"].str.contains(search, case=False, na=False)]
-    filtered = filtered.sort_values(sort_by, ascending=(sort_dir == "asc")).reset_index(drop=True)
+    # TOP = descendant, FLOP = ascendant (= les pires ventes)
+    filtered = filtered.sort_values(metric, ascending=(view == "FLOP")).reset_index(drop=True)
     if top_n != 9999:
         filtered = filtered.head(top_n)
 
-    # Enrichissement avec photos depuis le catalogue Zelty
+    # Enrichissement catalogue (photos)
     try:
         catalog = zelty_client.fetch_catalog_items()
         filtered = zelty_client.match_csv_to_catalog(filtered, catalog)
-        nb_matched = (filtered["img"].astype(bool)).sum()
-        if nb_matched:
-            st.caption(f"📷 {nb_matched}/{len(filtered)} produits enrichis avec photo depuis le catalogue Zelty.")
-    except zelty_client.ZeltyError as e:
-        st.caption(f"Catalogue non chargé : {e}")
+    except zelty_client.ZeltyError:
         filtered["img"] = ""
 
-    # KPIs produits
+    # KPIs
     pk1, pk2, pk3, pk4 = st.columns(4)
     pk1.metric("CA HT total", f"{total_ht/1000:,.1f} K€".replace(",", " "))
     pk2.metric("Unités", f"{int(data['qte'].sum()):,}".replace(",", " "))
     pk3.metric("Références", f"{len(data)}")
-    pk4.metric(f"Top {len(filtered)} couvre", f"{(filtered['ht'].sum()/total_ht*100):.1f}%")
+    pk4.metric(f"Couverture {view} {len(filtered)}",
+                f"{(filtered[metric].sum()/data[metric].sum()*100):.1f} %")
 
-    # Table produits avec photos
-    render_product_table(filtered.to_dict("records"), sort_key=sort_by, show_photos=True)
+    st.markdown("")  # espace
+    # Table style Bron
+    render_product_table(filtered.to_dict("records"), sort_key=metric, show_photos=True)
 
     # Chart
     chart_n = min(20, len(filtered))

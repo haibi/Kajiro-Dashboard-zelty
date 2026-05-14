@@ -25,77 +25,58 @@ def render_product_table(
     sort_key: str = "ht",
     show_photos: bool = True,
 ) -> None:
-    """Table produits façon Bron : miniature, rang coloré, sparkbar, CA / unités / prix moy / %CA."""
+    """Table produits façon Bron : photo, rang, nom + '% du top', CA + unités à droite."""
     if not rows:
         return
 
-    max_val = max((r.get(sort_key, 0) or 0) for r in rows) or 1
+    total_val = sum((r.get(sort_key, 0) or 0) for r in rows) or 1
     photo_w = "44px" if show_photos else "0"
-    grid = f"40px {photo_w} 1fr 120px 100px 90px 80px"
+    grid = f"36px {photo_w} 1fr 130px"
 
     parts: list[str] = [f'<div class="kj-table" style="--cols: {grid};">']
-    parts.append('<div class="kj-tr kj-thead">')
-    parts.append('<div>#</div>')
-    if show_photos:
-        parts.append('<div></div>')
-    parts.append('<div>PRODUIT</div>')
-    parts.append('<div class="kj-h-hi">CA HT</div>')
-    parts.append('<div>UNITÉS</div>')
-    parts.append('<div>PRIX MOY.</div>')
-    parts.append('<div>% CA</div>')
-    parts.append('</div>')
-
     for i, r in enumerate(rows, start=1):
         rank_color = RANK_COLORS.get(i, COLORS["muted"])
         is_top3 = i <= 3
-        weight = "700" if is_top3 else "400"
-        spark_pct = ((r.get(sort_key, 0) or 0) / max_val) * 100
+        pct_top = ((r.get(sort_key, 0) or 0) / total_val) * 100
+
         parts.append('<div class="kj-tr">')
+        # Rank
         parts.append(
             f'<div class="kj-rank" style="color:{rank_color};font-weight:{("800" if is_top3 else "500")};">'
             f"{i}</div>"
         )
+        # Photo
         if show_photos:
             img = r.get("img") or ""
             if img:
                 parts.append(
-                    f'<div><img src="{img}" style="width:40px;height:40px;'
+                    f'<div><img src="{img}" style="width:42px;height:42px;'
                     f'object-fit:cover;border-radius:6px;border:1px solid {COLORS["border"]};"></div>'
                 )
             else:
                 parts.append(
-                    f'<div style="width:40px;height:40px;border-radius:6px;'
+                    f'<div style="width:42px;height:42px;border-radius:6px;'
                     f'background:{COLORS["surface_alt"]};border:1px solid {COLORS["border"]};"></div>'
                 )
+        # Nom + subtitle "X.X % du top"
         parts.append(
             f'<div class="kj-name-cell">'
-            f'<div style="font-weight:{weight};">{r.get("nom", "")}</div>'
-            f'<div class="kj-spark"><div class="kj-spark-fill" style="width:{spark_pct:.0f}%;"></div></div>'
+            f'<div style="color:{COLORS["white"]};font-weight:{("700" if is_top3 else "500")};font-size:13px;">'
+            f'{r.get("nom", "")}</div>'
+            f'<div style="color:{COLORS["muted"]};font-size:11px;">'
+            f"{pct_top:.1f} % du top</div>"
             f'</div>'
         )
-        # CA HT
+        # Right column : CA bold + Units smaller
         ca = r.get("ht", 0)
+        qte = int(r.get("qte", 0) or 0)
         parts.append(
-            f'<div style="color:{COLORS["coral"]};font-weight:700;">'
-            f"{_fmt_eur(ca)}</div>"
-        )
-        # Unités
-        parts.append(f'<div style="color:{COLORS["white"]};font-weight:500;">{_fmt_int(r.get("qte", 0))} u.</div>')
-        # Prix moyen
-        parts.append(f'<div style="color:{COLORS["muted"]};">{r.get("prix_moy", 0):.2f} €</div>')
-        # % CA
-        pct = r.get("pct_ca", 0)
-        if pct > 5:
-            tag_color = COLORS["coral"]
-        elif pct > 2:
-            tag_color = COLORS["amber"]
-        else:
-            tag_color = COLORS["muted"]
-        parts.append(
-            f'<div><span style="background:{tag_color}22;color:{tag_color};'
-            f'border:1px solid {tag_color}44;padding:2px 8px;border-radius:4px;'
-            f'font-size:11px;font-weight:700;letter-spacing:0.04em;">'
-            f"{pct:.2f}%</span></div>"
+            f'<div style="text-align:right;">'
+            f'<div style="color:{COLORS["white"]};font-weight:700;font-size:14px;">'
+            f'{_fmt_eur(ca)}</div>'
+            f'<div style="color:{COLORS["muted"]};font-size:11px;margin-top:2px;">'
+            f"{_fmt_int(qte)} u.</div>"
+            f'</div>'
         )
         parts.append('</div>')
 

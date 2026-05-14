@@ -9,7 +9,7 @@ from dateutil.relativedelta import relativedelta
 
 PARIS = ZoneInfo("Europe/Paris")
 
-PRESETS = ["Mois en cours", "Mois précédent", "Année en cours", "Personnalisé"]
+PRESETS = ["Aujourd'hui", "Cette semaine", "Mois en cours", "Mois précédent", "Année en cours", "Personnalisé"]
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,17 @@ class Period:
 def _today() -> date:
     from datetime import datetime
     return datetime.now(PARIS).date()
+
+
+def today_period(today: date | None = None) -> Period:
+    t = today or _today()
+    return Period(start=t, end=t, label="Aujourd'hui")
+
+
+def current_week(today: date | None = None) -> Period:
+    t = today or _today()
+    monday = t - timedelta(days=t.weekday())
+    return Period(start=monday, end=t, label="Cette semaine")
 
 
 def current_month(today: date | None = None) -> Period:
@@ -54,6 +65,10 @@ def custom(start: date, end: date) -> Period:
 
 
 def from_preset(name: str, custom_range: tuple[date, date] | None = None) -> Period:
+    if name == "Aujourd'hui":
+        return today_period()
+    if name == "Cette semaine":
+        return current_week()
     if name == "Mois en cours":
         return current_month()
     if name == "Mois précédent":
