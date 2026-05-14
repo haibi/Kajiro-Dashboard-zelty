@@ -12,13 +12,95 @@ import backfill
 import cache
 import periods
 import zelty_client
-from auth import logout, require_login
+from auth import allowed_restaurant_ids, logout, require_login
 from components import render_product_table, render_ranking_table
 from theme import COLORS, header, inject_css
 
 FAVICON = Path(__file__).parent / "assets" / "favicon.svg"
 
 TOP_PRESETS = [15, 30, 50, 100]
+
+
+@st.dialog("👥 Gestion des utilisateurs", width="large")
+def users_dialog(all_restos: list[dict]) -> None:
+    """Panneau admin : liste, ajout, modif, suppression d'utilisateurs."""
+    st.caption(
+        "Définis qui peut se connecter avec son compte Google et à quels "
+        "restaurants. Un utilisateur sans entrée ici se voit refuser l'accès."
+    )
+    users = cache.list_users()
+    id_to_name = {r["id"]: r["name"] for r in all_restos}
+
+    # --- Liste des users existants ---
+    if users:
+        for u in users:
+            email = u["email"]
+            role = u["role"]
+            rids = u.get("restaurant_ids")
+            scope = "Tous" if rids is None else (
+                "Aucun" if not rids else ", ".join(
+                    id_to_name.get(int(r), f"#{r}") for r in rids
+                )
+            )
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 1, 1])
+                c1.markdown(f"**{email}**  \n_{role.upper()} · {scope}_")
+                if c2.button("Modifier", key=f"edit_{email}"):
+                    st.session_state["edit_user"] = email
+                    st.rerun()
+                if c3.button("Supprimer", key=f"del_{email}", type="secondary"):
+                    cache.delete_user(email)
+                    st.rerun()
+
+    st.markdown("---")
+
+    # --- Form d'édition (si on a cliqué "Modifier") ou de création ---
+    editing = st.session_state.get("edit_user", "")
+    existing = next((u for u in users if u["email"] == editing), None) if editing else None
+
+    title = f"Modifier {editing}" if existing else "Ajouter un utilisateur"
+    st.markdown(f"#### {title}")
+
+    email = st.text_input(
+        "Email Google",
+        value=existing["email"] if existing else "",
+        disabled=bool(existing),
+        placeholder="prenom.nom@kajirosushi.com",
+    )
+    role = st.radio(
+        "Rôle",
+        options=["viewer", "admin"],
+        index=0 if not existing else (0 if existing["role"] == "viewer" else 1),
+        horizontal=True,
+        help="admin = accès complet + peut gérer les utilisateurs. viewer = lecture seule.",
+    )
+    scope = st.radio(
+        "Accès aux restaurants",
+        options=["Tous", "Sélection"],
+        index=0 if (not existing or existing.get("restaurant_ids") is None) else 1,
+        horizontal=True,
+    )
+    selected_rids: list[int] | None = None
+    if scope == "Sélection":
+        current_rids = set(int(r) for r in (existing.get("restaurant_ids") or []))
+        chosen_names = st.multiselect(
+            "Restaurants autorisés",
+            options=[r["name"] for r in all_restos],
+            default=[r["name"] for r in all_restos if r["id"] in current_rids],
+        )
+        selected_rids = [r["id"] for r in all_restos if r["name"] in chosen_names]
+
+    cs, cc = st.columns(2)
+    if cs.button("💾 Enregistrer", type="primary", use_container_width=True):
+        try:
+            cache.upsert_user(email, role, selected_rids)
+            st.session_state.pop("edit_user", None)
+            st.rerun()
+        except ValueError as e:
+            st.error(str(e))
+    if cc.button("Annuler", use_container_width=True):
+        st.session_state.pop("edit_user", None)
+        st.rerun()
 
 st.set_page_config(
     page_title="Kajirō Sushi · Analytics",
@@ -44,6 +126,20 @@ with st.spinner("Connexion à Zelty…"):
 
 if restos_df.empty:
     st.warning("Aucun restaurant retourné par l'API.")
+    st.stop()
+
+# La liste complète est utile pour le panneau admin (gérer les accès)
+all_restos_df = restos_df.copy()
+all_ids = restos_df["id"].astype(int).tolist()
+
+# Filtrage selon les droits du user
+user_ids = allowed_restaurant_ids(user, all_ids)
+restos_df = restos_df[restos_df["id"].isin(user_ids)].reset_index(drop=True)
+if restos_df.empty:
+    st.error(
+        "Ton compte n'a accès à aucun restaurant. "
+        "Contacte un administrateur pour étendre tes droits."
+    )
     st.stop()
 
 # ------------------------------------------------------------------
@@ -380,15 +476,18 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    # Backfill historique (admin only)
+    # Section Admin
     if user.get("role") == "admin":
         st.markdown("---")
         st.markdown(
             f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;text-transform:uppercase;'>"
-            f"Admin · Backfill</div>",
+            f"Administration</div>",
             unsafe_allow_html=True,
         )
-        years = st.select_slider("Années en arrière", options=[1, 2, 3, 4, 5, 6, 7], value=5, key="bf_years")
+        if st.button("👥 Gérer les utilisateurs", use_container_width=True):
+            users_dialog(all_restos_df.to_dict("records"))
+
+        years = st.select_slider("Backfill (années)", options=[1, 2, 3, 4, 5, 6, 7], value=5, key="bf_years")
         if st.button(f"🕰️ Backfill {years} an(s)", help="Long ~30-60 min. Garde l'onglet ouvert."):
             progress_bar = st.progress(0)
             status = st.empty()

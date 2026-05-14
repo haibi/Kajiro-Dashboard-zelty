@@ -1,62 +1,78 @@
-"""Auth Google OAuth via st.login() (Streamlit ≥ 1.42).
+"""Auth Google OAuth (st.login) + gestion des accès via Supabase.
 
-La config OAuth est dans .streamlit/secrets.toml sous [auth].
-La whitelist d'emails + rôles est dans [auth_allowed_users].
-Pas de gestion de mot de passe — Google fournit le 2FA et l'audit.
+La whitelist d'emails + rôle + restaurants autorisés vit dans la table
+`users` de Supabase. Pour ajouter/modifier un user :
+- soit via le panneau "Gérer les utilisateurs" (admin), depuis l'app
+- soit directement via Supabase → Table Editor → users
+
+Le compte `hello@kajirosushi.com` est garanti admin avec accès total (bootstrap).
 """
 from __future__ import annotations
 
 import streamlit as st
 
+import cache
 from theme import load_svg
-
 
 ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
 
+BOOTSTRAP_ADMIN_EMAIL = "hello@kajirosushi.com"
 
-def _allowed_users() -> dict[str, str]:
-    """Retourne {email_lowercase: role} depuis secrets [auth_allowed_users]."""
+
+def _ensure_bootstrap() -> None:
+    """Première exécution : crée l'admin par défaut si la table est vide."""
     try:
-        raw = st.secrets["auth_allowed_users"]
-    except (KeyError, FileNotFoundError):
-        return {}
-    return {str(email).strip().lower(): str(role).strip().lower() for email, role in raw.items()}
+        cache.init_db()
+        cache.bootstrap_admin(BOOTSTRAP_ADMIN_EMAIL)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Impossible de connecter Supabase : {e}")
+        st.stop()
 
 
-def current_user() -> dict[str, str] | None:
-    """Renvoie {email, name, picture, role} si l'utilisateur est loggé et autorisé."""
+def current_user() -> dict | None:
+    """Renvoie le user logged-in s'il est autorisé. None sinon.
+
+    Format : {email, name, picture, role, restaurant_ids (None=all)}.
+    """
     if not getattr(st.user, "is_logged_in", False):
         return None
     email = (getattr(st.user, "email", "") or "").lower()
-    role = _allowed_users().get(email)
-    if not role:
+    u = cache.get_user(email)
+    if not u:
         return None
     return {
         "email": email,
         "name": getattr(st.user, "name", "") or email,
         "picture": getattr(st.user, "picture", "") or "",
-        "role": role,
+        "role": u["role"],
+        "restaurant_ids": u.get("restaurant_ids"),  # None = tous
     }
 
 
-def is_admin() -> bool:
-    u = current_user()
+def is_admin(user: dict | None = None) -> bool:
+    u = user or current_user()
     return bool(u and u.get("role") == ROLE_ADMIN)
 
 
+def allowed_restaurant_ids(user: dict, all_ids: list[int]) -> list[int]:
+    """Filtre les IDs restos selon le user. None = tous."""
+    rids = user.get("restaurant_ids")
+    if rids is None:
+        return list(all_ids)
+    rids_set = set(int(r) for r in rids)
+    return [r for r in all_ids if r in rids_set]
+
+
 def logout() -> None:
-    """Déconnexion : st.logout() efface la session Streamlit + redirige."""
     if hasattr(st, "logout"):
         st.logout()
 
 
-def require_login() -> dict[str, str]:
-    """Bloque le rendu si l'utilisateur n'est pas connecté avec un email whitelisté.
+def require_login() -> dict:
+    """Bloque le rendu si user non loggé ou pas dans la whitelist DB."""
+    _ensure_bootstrap()
 
-    Affiche la page de login (logo + bouton Google) et `st.stop()`. Sinon renvoie
-    le dict utilisateur.
-    """
     user = current_user()
     if user:
         return user
@@ -76,11 +92,9 @@ def require_login() -> dict[str, str]:
     col1, col2, col3 = st.columns([1, 1.6, 1])
     with col2:
         if not getattr(st.user, "is_logged_in", False):
-            # Pas encore connecté
             if st.button("Se connecter avec Google", type="primary", use_container_width=True):
                 st.login("google")
         else:
-            # Connecté côté Google mais email pas dans la whitelist
             connected_email = getattr(st.user, "email", "?")
             st.markdown(
                 f'<div style="color:#ED7553;font-size:13px;text-align:center;'

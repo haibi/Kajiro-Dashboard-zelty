@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS sync_log (
     synced_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (resource, restaurant_id, date)
 );
+
+-- Utilisateurs autorisés + scope d'accès
+-- restaurant_ids NULL = accès à tous les restaurants
+-- restaurant_ids = []  = aucun accès (lock-out explicite)
+-- restaurant_ids = [id, id, ...] = uniquement ceux-là
+CREATE TABLE IF NOT EXISTS users (
+    email          TEXT        PRIMARY KEY,
+    role           TEXT        NOT NULL DEFAULT 'viewer'
+                               CHECK (role IN ('admin', 'viewer')),
+    restaurant_ids INTEGER[],
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -280,3 +293,80 @@ def clear_all() -> None:
     with _conn() as c:
         with c.cursor() as cur:
             cur.execute("TRUNCATE closures, orders, sync_log")
+
+
+# ---------------------------------------------------------------------------
+# Users (gestion des accès)
+# ---------------------------------------------------------------------------
+def bootstrap_admin(email: str) -> None:
+    """Garantit qu'un compte admin avec accès total existe.
+
+    Si aucun admin n'existe encore, crée `email` comme admin avec tous les
+    restaurants (`restaurant_ids = NULL`). Idempotent.
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    with _conn() as c:
+        with c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+            (n_admins,) = cur.fetchone()
+            if n_admins == 0:
+                cur.execute(
+                    "INSERT INTO users (email, role, restaurant_ids) "
+                    "VALUES (%s, 'admin', NULL) ON CONFLICT (email) DO UPDATE "
+                    "SET role = 'admin', restaurant_ids = NULL",
+                    (email,),
+                )
+
+
+def get_user(email: str) -> dict | None:
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    with _conn() as c:
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                "SELECT email, role, restaurant_ids FROM users WHERE email = %s",
+                (email,),
+            )
+            return cur.fetchone()
+
+
+def list_users() -> list[dict]:
+    with _conn() as c:
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                "SELECT email, role, restaurant_ids, created_at "
+                "FROM users ORDER BY role DESC, email"
+            )
+            return cur.fetchall()
+
+
+def upsert_user(email: str, role: str, restaurant_ids: list[int] | None) -> None:
+    """Crée/met à jour un user. `restaurant_ids=None` = accès à tous."""
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
+        raise ValueError("Email invalide")
+    if role not in {"admin", "viewer"}:
+        raise ValueError("role doit être 'admin' ou 'viewer'")
+    with _conn() as c:
+        with c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (email, role, restaurant_ids) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (email) DO UPDATE SET "
+                "  role = EXCLUDED.role, "
+                "  restaurant_ids = EXCLUDED.restaurant_ids, "
+                "  updated_at = NOW()",
+                (email, role, restaurant_ids),
+            )
+
+
+def delete_user(email: str) -> None:
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    with _conn() as c:
+        with c.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE email = %s", (email,))
