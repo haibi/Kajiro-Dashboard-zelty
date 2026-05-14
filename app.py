@@ -347,7 +347,19 @@ with tab_dashboard:
     orders_prev = zelty_client.fetch_orders_summary(selected_ids, prev.start, prev.end)
 
     if closures.empty and orders.empty:
-        st.info("Aucune donnée en cache pour cette période. Clique 🔄 Sync today dans le sidebar pour aujourd'hui.")
+        # Range disponible en DB pour aider l'utilisateur
+        try:
+            ranges = cache.stats()
+            oldest = ranges.get("oldest") or "?"
+            newest = ranges.get("newest") or "?"
+            st.warning(
+                f"📭 Aucune donnée sur la période {period.start:%d/%m/%Y} → {period.end:%d/%m/%Y}.\n\n"
+                f"**Données actuellement disponibles** : {oldest} → {newest}.\n\n"
+                f"Si tu veux remonter plus loin, lance un **Backfill** depuis le sidebar Admin "
+                f"(7 ans max). Sinon clique 🔄 **Sync today** pour aujourd'hui."
+            )
+        except Exception:  # noqa: BLE001
+            st.info("Aucune donnée en cache pour cette période.")
         st.stop()
 
     # KPIs courants — orders comme source de vérité
