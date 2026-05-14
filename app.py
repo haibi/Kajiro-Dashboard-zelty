@@ -93,12 +93,33 @@ def users_dialog(all_restos: list[dict]) -> None:
         )
         selected_rids = [r["id"] for r in all_restos if r["name"] in chosen_names]
 
+    # Mot de passe
+    if existing:
+        password = st.text_input(
+            "Nouveau mot de passe (vide = ne pas changer)",
+            type="password",
+            help="Laisse vide si tu ne veux pas changer le mot de passe actuel.",
+        )
+    else:
+        password = st.text_input(
+            "Mot de passe initial",
+            type="password",
+            help="Mot de passe que l'utilisateur devra utiliser pour se connecter. "
+                 "Il pourra le changer plus tard.",
+        )
+
     cs, cc = st.columns(2)
     if cs.button("💾 Enregistrer", type="primary", use_container_width=True):
         try:
-            cache.upsert_user(email, role, selected_rids)
-            st.session_state.pop("edit_user", None)
-            st.rerun()
+            # Pour un nouvel utilisateur on EXIGE un mot de passe
+            if not existing and not password:
+                st.error("Mot de passe requis pour un nouvel utilisateur.")
+            else:
+                cache.upsert_user(email, role, selected_rids,
+                                    password=password if password else None)
+                st.session_state.pop("edit_user", None)
+                st.success(f"✅ {email} enregistré")
+                st.rerun()
         except ValueError as e:
             st.error(str(e))
     if cc.button("Annuler", use_container_width=True):

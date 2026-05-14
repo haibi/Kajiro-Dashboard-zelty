@@ -115,9 +115,11 @@ CREATE TABLE IF NOT EXISTS users (
     role           TEXT        NOT NULL DEFAULT 'viewer'
                                CHECK (role IN ('admin', 'viewer')),
     restaurant_ids INTEGER[],
+    password_hash  TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
 """
 
 
@@ -412,11 +414,61 @@ def clear_all() -> None:
 # ---------------------------------------------------------------------------
 # Users (gestion des accès)
 # ---------------------------------------------------------------------------
-def bootstrap_admin(email: str) -> None:
+import hashlib
+import hmac as _hmac
+import secrets as _secrets
+
+
+def hash_password(plain: str) -> str:
+    """PBKDF2-SHA256 avec salt aléatoire 128 bits, 100k itérations."""
+    if not plain:
+        raise ValueError("Mot de passe vide")
+    salt = _secrets.token_hex(16)
+    iters = 100_000
+    dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode(), iters)
+    return f"pbkdf2_sha256${iters}${salt}${dk.hex()}"
+
+
+def verify_password(plain: str, hashed: str | None) -> bool:
+    """Vérifie un mot de passe contre un hash stocké."""
+    if not hashed or not plain:
+        return False
+    try:
+        algo, iters_str, salt, hash_hex = hashed.split("$", 3)
+    except (ValueError, AttributeError):
+        return False
+    if algo != "pbkdf2_sha256":
+        return False
+    try:
+        iters = int(iters_str)
+    except ValueError:
+        return False
+    dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode(), iters)
+    return _hmac.compare_digest(dk.hex(), hash_hex)
+
+
+def set_password(email: str, plain: str) -> None:
+    """Définit le mot de passe d'un utilisateur."""
+    email = (email or "").strip().lower()
+    if not email:
+        raise ValueError("Email vide")
+    hashed = hash_password(plain)
+    with _conn() as c:
+        with c.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET password_hash=%s, updated_at=NOW() WHERE email=%s",
+                (hashed, email),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"Utilisateur {email} introuvable")
+
+
+def bootstrap_admin(email: str, default_password: str | None = None) -> None:
     """Garantit qu'un compte admin avec accès total existe.
 
-    Si aucun admin n'existe encore, crée `email` comme admin avec tous les
-    restaurants (`restaurant_ids = NULL`). Idempotent.
+    Si aucun admin n'existe : crée `email` comme admin avec tous les restos.
+    Si `default_password` fourni ET aucun password_hash : le pose.
+    Idempotent.
     """
     email = (email or "").strip().lower()
     if not email:
@@ -432,6 +484,16 @@ def bootstrap_admin(email: str) -> None:
                     "SET role = 'admin', restaurant_ids = NULL",
                     (email,),
                 )
+            # Si default password fourni et user n'a pas encore de hash, on le pose
+            if default_password:
+                cur.execute("SELECT password_hash FROM users WHERE email=%s", (email,))
+                row = cur.fetchone()
+                if row and not row[0]:
+                    hashed = hash_password(default_password)
+                    cur.execute(
+                        "UPDATE users SET password_hash=%s WHERE email=%s",
+                        (hashed, email),
+                    )
 
 
 def get_user(email: str) -> dict | None:
@@ -441,7 +503,7 @@ def get_user(email: str) -> dict | None:
     with _conn() as c:
         with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(
-                "SELECT email, role, restaurant_ids FROM users WHERE email = %s",
+                "SELECT email, role, restaurant_ids, password_hash FROM users WHERE email = %s",
                 (email,),
             )
             return cur.fetchone()
@@ -457,24 +519,43 @@ def list_users() -> list[dict]:
             return cur.fetchall()
 
 
-def upsert_user(email: str, role: str, restaurant_ids: list[int] | None) -> None:
-    """Crée/met à jour un user. `restaurant_ids=None` = accès à tous."""
+def upsert_user(
+    email: str,
+    role: str,
+    restaurant_ids: list[int] | None,
+    password: str | None = None,
+) -> None:
+    """Crée/met à jour un user. `restaurant_ids=None` = accès à tous.
+    Si `password` est fourni, il est haché et stocké."""
     email = (email or "").strip().lower()
     if not email or "@" not in email:
         raise ValueError("Email invalide")
     if role not in {"admin", "viewer"}:
         raise ValueError("role doit être 'admin' ou 'viewer'")
+    hashed = hash_password(password) if password else None
     with _conn() as c:
         with c.cursor() as cur:
-            cur.execute(
-                "INSERT INTO users (email, role, restaurant_ids) "
-                "VALUES (%s, %s, %s) "
-                "ON CONFLICT (email) DO UPDATE SET "
-                "  role = EXCLUDED.role, "
-                "  restaurant_ids = EXCLUDED.restaurant_ids, "
-                "  updated_at = NOW()",
-                (email, role, restaurant_ids),
-            )
+            if hashed:
+                cur.execute(
+                    "INSERT INTO users (email, role, restaurant_ids, password_hash) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (email) DO UPDATE SET "
+                    "  role = EXCLUDED.role, "
+                    "  restaurant_ids = EXCLUDED.restaurant_ids, "
+                    "  password_hash = EXCLUDED.password_hash, "
+                    "  updated_at = NOW()",
+                    (email, role, restaurant_ids, hashed),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO users (email, role, restaurant_ids) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (email) DO UPDATE SET "
+                    "  role = EXCLUDED.role, "
+                    "  restaurant_ids = EXCLUDED.restaurant_ids, "
+                    "  updated_at = NOW()",
+                    (email, role, restaurant_ids),
+                )
 
 
 def delete_user(email: str) -> None:
