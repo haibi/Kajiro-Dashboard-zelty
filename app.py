@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+import backfill
 import cache
 import periods
 import zelty_client
@@ -378,6 +379,34 @@ with st.sidebar:
         cache.clear_all()
         st.cache_data.clear()
         st.rerun()
+
+    # Backfill historique (admin only)
+    if user.get("role") == "admin":
+        st.markdown("---")
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;text-transform:uppercase;'>"
+            f"Admin · Backfill</div>",
+            unsafe_allow_html=True,
+        )
+        years = st.select_slider("Années en arrière", options=[1, 2, 3, 4, 5, 6, 7], value=5, key="bf_years")
+        if st.button(f"🕰️ Backfill {years} an(s)", help="Long ~30-60 min. Garde l'onglet ouvert."):
+            progress_bar = st.progress(0)
+            status = st.empty()
+            all_ids = restos_df["id"].astype(int).tolist()
+
+            def _cb(done: int, total: int, msg: str) -> None:
+                if total:
+                    progress_bar.progress(min(1.0, done / total))
+                status.text(f"{done}/{total} — {msg}")
+
+            try:
+                stats = backfill.run_backfill(all_ids, years=years, callback=_cb)
+                st.success(f"✅ Fini ! {stats.get('orders')} commandes, {stats.get('closures')} closures.")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Backfill interrompu : {e}")
+            st.cache_data.clear()
+
+    st.markdown("---")
     if st.button("Déconnexion"):
         logout()
         st.rerun()
