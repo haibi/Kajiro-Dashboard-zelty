@@ -29,7 +29,9 @@ def _pool() -> ConnectionPool:
         min_size=1,
         max_size=4,
         timeout=30,
-        kwargs={"connect_timeout": 10},
+        # NOTE: prepare_threshold=None désactive les prepared statements ;
+        # obligatoire avec le pooler Supabase en mode transaction (port 6543).
+        kwargs={"connect_timeout": 10, "prepare_threshold": None},
         open=True,
     )
 
