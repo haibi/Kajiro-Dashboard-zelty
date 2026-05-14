@@ -314,6 +314,129 @@ def _css() -> str:
             border-radius: 2px;
             transition: width 0.4s ease;
         }}
+
+        /* === MOBILE (< 768px) === */
+        @media (max-width: 768px) {{
+            .block-container {{
+                padding: 0.5rem 0.75rem 2rem !important;
+                max-width: 100% !important;
+            }}
+            /* Header — logo plus petit, masquer pill décorative */
+            .kj-header {{
+                padding: 6px 0 14px 0;
+                margin-bottom: 16px;
+                gap: 10px;
+            }}
+            .kj-header svg {{ height: 26px !important; }}
+            .kj-pill {{ display: none !important; }}
+            .kj-header-sub {{ font-size: 9px !important; letter-spacing: 0.12em; }}
+
+            /* Tabs : tap target plus grand, font lisible */
+            button[data-baseweb="tab"] {{
+                padding: 10px 12px !important;
+                font-size: 11px !important;
+                min-height: 44px;
+                letter-spacing: 0.04em !important;
+            }}
+            div[data-baseweb="tab-list"] {{
+                gap: 0 !important;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }}
+
+            /* Boutons */
+            .stButton > button {{
+                min-height: 44px !important;
+                font-size: 12px !important;
+                padding: 8px 12px !important;
+            }}
+
+            /* Pills (st.pills) — plus compactes */
+            div[data-testid="stPills"] button,
+            [data-baseweb="button-group"] button {{
+                min-height: 36px !important;
+                font-size: 12px !important;
+                padding: 6px 12px !important;
+            }}
+
+            /* Métriques : moins de padding, font lisible */
+            div[data-testid="stMetric"] {{
+                padding: 10px 12px !important;
+            }}
+            div[data-testid="stMetricLabel"] {{
+                font-size: 9px !important;
+            }}
+            div[data-testid="stMetricValue"] {{
+                font-size: 18px !important;
+            }}
+            div[data-testid="stMetricDelta"] {{
+                font-size: 10px !important;
+            }}
+
+            /* Inputs : 44px min pour tap iOS */
+            .stTextInput input, .stDateInput input,
+            [data-baseweb="select"] > div {{
+                min-height: 44px !important;
+                font-size: 14px !important;  /* >= 16px évite zoom auto iOS, mais 14px reste lisible */
+            }}
+
+            /* Tables custom : plus compactes, font réduite */
+            .kj-tr {{
+                gap: 8px !important;
+                padding: 10px 12px !important;
+                font-size: 12px !important;
+            }}
+            .kj-name-cell > div:first-child {{
+                font-size: 12px !important;
+            }}
+            .kj-thead {{
+                font-size: 9px !important;
+                letter-spacing: 0.08em !important;
+            }}
+
+            /* Login : logo + carte plus petit */
+            .kj-login-card {{
+                max-width: 90% !important;
+                padding: 16px 14px !important;
+            }}
+            .kj-login-logo {{
+                width: 140px !important;
+                margin-bottom: 18px !important;
+            }}
+
+            /* Streamlit columns gap : moins serré */
+            div[data-testid="stHorizontalBlock"] {{
+                gap: 8px !important;
+            }}
+
+            /* DataFrames : scrollable horizontalement */
+            .stDataFrame {{
+                font-size: 11px !important;
+            }}
+
+            /* Plotly responsive — déjà use_container_width=true */
+            .js-plotly-plot {{ width: 100% !important; }}
+
+            /* Cacher l'icône "fullscreen" sur plotly mobile (encombre) */
+            .modebar-container {{ display: none !important; }}
+
+            /* Caption + markdown : un peu plus grand pour lisibilité */
+            .stCaption, [data-testid="stCaptionContainer"] {{
+                font-size: 11px !important;
+            }}
+        }}
+
+        /* === Très petit (< 420px) — compresse encore plus === */
+        @media (max-width: 420px) {{
+            div[data-testid="stMetricValue"] {{
+                font-size: 16px !important;
+            }}
+            button[data-baseweb="tab"] {{
+                padding: 8px 10px !important;
+                font-size: 10px !important;
+            }}
+            .kj-header svg {{ height: 22px !important; }}
+        }}
     """).strip()
 
 
@@ -321,6 +444,7 @@ def inject_css() -> None:
     # Tags PWA — manifest + apple-touch-icon + theme-color
     # Les fichiers static/* sont servis par Streamlit via enableStaticServing=true
     pwa_head = (
+        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">'
         '<link rel="manifest" href="./app/static/manifest.json">'
         '<link rel="apple-touch-icon" sizes="180x180" href="./app/static/icon-180.png">'
         '<link rel="icon" type="image/png" sizes="192x192" href="./app/static/icon-192.png">'
