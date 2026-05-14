@@ -362,8 +362,25 @@ def fetch_product_sales(
 
 
 # ---------------------------------------------------------------------------
-# Catalog (plats avec photos + descriptions)
+# Catalog (plats avec photos + descriptions + tags)
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_catalog_tags() -> pd.DataFrame:
+    """Tags du catalogue Zelty (catégories produits)."""
+    try:
+        payload = _get(f"/{API_VERSION}/catalog/tags")
+    except ZeltyError:
+        return pd.DataFrame(columns=["id", "name"])
+    items = payload.get("tags", []) if isinstance(payload, dict) else []
+    rows = [{
+        "id": str(t.get("id")),
+        "name": (t.get("name") or "").strip(),
+        "img": t.get("img") or "",
+        "id_parent": t.get("id_parent"),
+    } for t in items if t.get("name")]
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_catalog_items() -> pd.DataFrame:
     """Retourne tous les plats (type=dish) de tous les catalogues, dédupliqués.
@@ -407,6 +424,24 @@ def fetch_catalog_items() -> pd.DataFrame:
                 "color": it.get("color") or "",
             }
     return pd.DataFrame(list(seen.values()))
+
+
+def enrich_sales_with_catalog(sales_df: pd.DataFrame, catalog_df: pd.DataFrame) -> pd.DataFrame:
+    """Joint sales (avec item_id) + catalogue (avec internal_id) → ajoute img + description."""
+    if sales_df.empty:
+        return sales_df
+    out = sales_df.copy()
+    if catalog_df.empty:
+        out["img"] = ""
+        out["description"] = ""
+        return out
+    cat = catalog_df[["internal_id", "img", "description"]].rename(columns={"internal_id": "item_id"})
+    cat["item_id"] = cat["item_id"].astype(str)
+    out["item_id"] = out["item_id"].astype(str)
+    out = out.merge(cat, on="item_id", how="left")
+    out["img"] = out["img"].fillna("")
+    out["description"] = out["description"].fillna("")
+    return out
 
 
 def match_csv_to_catalog(csv_df: pd.DataFrame, catalog_df: pd.DataFrame) -> pd.DataFrame:

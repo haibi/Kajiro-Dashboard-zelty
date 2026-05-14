@@ -146,13 +146,14 @@ if restos_df.empty:
 # Filtres globaux
 # ------------------------------------------------------------------
 # Boutons période rapide
+# ("Jour", "Aujourd'hui") désactivé pour l'instant — sera dispo quand on aura le live
 QUICK_PERIODS = [
-    ("Jour", "Aujourd'hui"),
-    ("Semaine", "Cette semaine"),
-    ("Mois", "Mois en cours"),
-    ("M-1", "Mois précédent"),
-    ("Année", "Année en cours"),
-    ("Perso", "Personnalisé"),
+    ("Jour", "Aujourd'hui", True),   # disabled
+    ("Semaine", "Cette semaine", False),
+    ("Mois", "Mois en cours", False),
+    ("M-1", "Mois précédent", False),
+    ("Année", "Année en cours", False),
+    ("Perso", "Personnalisé", False),
 ]
 if "period_preset" not in st.session_state:
     st.session_state["period_preset"] = "Mois en cours"
@@ -163,13 +164,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 period_cols = st.columns(len(QUICK_PERIODS) + 2)
-for i, (label, value) in enumerate(QUICK_PERIODS):
+for i, (label, value, disabled) in enumerate(QUICK_PERIODS):
     is_active = st.session_state["period_preset"] == value
     if period_cols[i].button(
         label,
         key=f"period_btn_{value}",
         use_container_width=True,
         type="primary" if is_active else "secondary",
+        disabled=disabled,
+        help="Bientôt — nécessite le sync temps réel" if disabled else None,
     ):
         st.session_state["period_preset"] = value
         st.rerun()
@@ -222,49 +225,70 @@ st.caption(
 # ------------------------------------------------------------------
 # Onglets
 # ------------------------------------------------------------------
-tab_reseau, tab_produits = st.tabs(["RÉSEAU", "PRODUITS"])
+tab_dashboard, tab_produits = st.tabs(["DASHBOARD", "PRODUITS"])
 
 # =============================================================================
 # TAB 1 — Réseau (depuis closures + orders)
 # =============================================================================
-with tab_reseau:
-    # LECTURE PURE Supabase — instantané. Pour synchroniser today, utiliser le bouton sidebar.
+with tab_dashboard:
     closures = zelty_client.fetch_closures(selected_ids, period.start, period.end)
     orders = zelty_client.fetch_orders_summary(selected_ids, period.start, period.end)
 
+    # Période précédente comparable (même durée juste avant)
+    prev = periods.previous_comparable(period)
+    orders_prev = zelty_client.fetch_orders_summary(selected_ids, prev.start, prev.end)
+
     if closures.empty and orders.empty:
-        st.info("Aucune donnée en cache pour cette période. Si tu attends today, clique 🔄 Sync today dans le sidebar.")
+        st.info("Aucune donnée en cache pour cette période. Clique 🔄 Sync today dans le sidebar pour aujourd'hui.")
         st.stop()
 
-    # KPIs
-    total_ttc = closures["turnover"].sum() if not closures.empty else orders["ttc"].sum()
-    total_taxes = closures["taxes"].sum() if not closures.empty else 0
-    total_ht = (total_ttc - total_taxes) if total_taxes else orders.get("ht", pd.Series(dtype=float)).sum()
+    # KPIs courants — orders comme source de vérité
+    total_ttc = orders["ttc"].sum() if not orders.empty else 0
+    total_ht = orders["ht"].sum() if not orders.empty else 0
     n_orders = len(orders)
     ticket_moyen = (total_ttc / n_orders) if n_orders else 0
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("CA TTC réseau", f"{total_ttc/1000:,.1f} K€".replace(",", " "))
-    k2.metric("CA HT", f"{total_ht/1000:,.1f} K€".replace(",", " ") if total_ht else "—")
-    k3.metric("Commandes", f"{n_orders:,}".replace(",", " ") if n_orders else "—")
-    k4.metric("Ticket moyen", f"{ticket_moyen:.2f} €" if ticket_moyen else "—")
+    # KPIs période précédente
+    p_ttc = orders_prev["ttc"].sum() if not orders_prev.empty else 0
+    p_ht = orders_prev["ht"].sum() if not orders_prev.empty else 0
+    p_n = len(orders_prev)
+    p_tm = (p_ttc / p_n) if p_n else 0
 
-    # Tableau par restaurant
-    if not closures.empty:
-        per_resto = (
-            closures.groupby("restaurant_id")
-            .agg(ca_ttc=("turnover", "sum"), taxes=("taxes", "sum"), jours=("date", "nunique"))
-            .reset_index()
-        )
+    def _delta(curr, prev_v):
+        if not prev_v:
+            return None
+        d = (curr - prev_v) / prev_v * 100
+        return f"{d:+.1f}%"
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("CA TTC réseau", f"{total_ttc/1000:,.1f} K€".replace(",", " "),
+              _delta(total_ttc, p_ttc), help=f"Période précédente : {p_ttc/1000:,.1f} K€".replace(",", " "))
+    k2.metric("CA HT", f"{total_ht/1000:,.1f} K€".replace(",", " ") if total_ht else "—",
+              _delta(total_ht, p_ht), help=f"Période précédente : {p_ht/1000:,.1f} K€".replace(",", " "))
+    k3.metric("Commandes", f"{n_orders:,}".replace(",", " ") if n_orders else "—",
+              _delta(n_orders, p_n), help=f"Période précédente : {p_n}")
+    k4.metric("Ticket moyen", f"{ticket_moyen:.2f} €" if ticket_moyen else "—",
+              _delta(ticket_moyen, p_tm), help=f"Période précédente : {p_tm:.2f} €")
+    st.caption(
+        f"vs période précédente : {prev.start:%d/%m} → {prev.end:%d/%m} ({prev.days} j)"
+    )
+
+    # Tableau par restaurant — source de vérité = orders (closures juste pour jours)
+    if not orders.empty:
+        per_resto = orders.groupby("restaurant_id").agg(
+            ca_ttc=("ttc", "sum"),
+            ca_ht=("ht", "sum"),
+            cmds=("order_id", "count"),
+        ).reset_index()
         per_resto["nom"] = per_resto["restaurant_id"].map(id_to_name)
-        per_resto["ca_ht"] = per_resto["ca_ttc"] - per_resto["taxes"]
+        per_resto["ticket_moyen"] = per_resto.apply(
+            lambda r: r["ca_ttc"] / r["cmds"] if r["cmds"] else 0, axis=1
+        )
         per_resto["pct"] = per_resto["ca_ttc"] / per_resto["ca_ttc"].sum() * 100
-        if not orders.empty:
-            cmd_count = orders.groupby("restaurant_id").size().rename("cmds")
-            per_resto = per_resto.merge(cmd_count, on="restaurant_id", how="left").fillna({"cmds": 0})
-            per_resto["ticket_moyen"] = per_resto.apply(
-                lambda r: r["ca_ttc"] / r["cmds"] if r["cmds"] else 0, axis=1
-            )
+        if not closures.empty:
+            jours_clos = closures.groupby("restaurant_id")["date"].nunique().rename("jours")
+            per_resto = per_resto.merge(jours_clos, on="restaurant_id", how="left").fillna({"jours": 0})
+            per_resto["jours"] = per_resto["jours"].astype(int)
         per_resto = per_resto.sort_values("ca_ttc", ascending=False).reset_index(drop=True)
 
         rows = per_resto.to_dict("records")
@@ -371,12 +395,43 @@ with tab_produits:
     view = st.session_state["prod_view"]       # TOP ou FLOP
     metric = st.session_state["prod_metric"]   # 'ht' ou 'qte'
 
-    # Recherche + nombre à afficher
-    fc1, fc2 = st.columns([3, 1])
+    # Enrichissement avec catalogue (photos) AVANT filtrage pour avoir les images
+    try:
+        catalog = zelty_client.fetch_catalog_items()
+        data = zelty_client.enrich_sales_with_catalog(data, catalog)
+    except zelty_client.ZeltyError:
+        data["img"] = ""
+        data["description"] = ""
+
+    # Extraction d'une catégorie depuis le préfixe du nom (MP1, PB1, Box4, ...)
+    def _category(name: str) -> str:
+        import re
+        m = re.match(r"^([A-Z]+\d*)", name or "")
+        if m:
+            prefix = m.group(1)
+            mapping = {
+                "MP": "Menu Plat", "PB": "Poké Bowl", "Box": "Box", "MM": "Menu",
+                "GY": "Gyoza", "KS": "Crispy", "RM": "Ramen", "ME": "Menu Enfant",
+            }
+            for k, v in mapping.items():
+                if prefix.startswith(k):
+                    return v
+            return prefix
+        return "Autre"
+    data["category"] = data["nom"].map(_category)
+    categories = ["Toutes"] + sorted(data["category"].dropna().unique().tolist())
+
+    # Filtres: catégorie / recherche / top N
+    fc1, fc2, fc3 = st.columns([2, 3, 1])
     with fc1:
+        chosen_cat = st.selectbox(
+            "Catégorie", categories, index=0,
+            label_visibility="collapsed",
+        )
+    with fc2:
         search = st.text_input("Rechercher", "", placeholder="Filtrer par nom de produit…",
                                 label_visibility="collapsed")
-    with fc2:
+    with fc3:
         top_n = st.selectbox(
             "Combien", [10, 20, 50, 100, 9999], index=1,
             format_func=lambda n: "Tout" if n == 9999 else f"Top {n}",
@@ -384,19 +439,13 @@ with tab_produits:
         )
 
     filtered = data.copy()
+    if chosen_cat != "Toutes":
+        filtered = filtered[filtered["category"] == chosen_cat]
     if search:
         filtered = filtered[filtered["nom"].str.contains(search, case=False, na=False)]
-    # TOP = descendant, FLOP = ascendant (= les pires ventes)
     filtered = filtered.sort_values(metric, ascending=(view == "FLOP")).reset_index(drop=True)
     if top_n != 9999:
         filtered = filtered.head(top_n)
-
-    # Enrichissement catalogue (photos)
-    try:
-        catalog = zelty_client.fetch_catalog_items()
-        filtered = zelty_client.match_csv_to_catalog(filtered, catalog)
-    except zelty_client.ZeltyError:
-        filtered["img"] = ""
 
     # KPIs
     pk1, pk2, pk3, pk4 = st.columns(4)
@@ -406,18 +455,109 @@ with tab_produits:
     pk4.metric(f"Couverture {view} {len(filtered)}",
                 f"{(filtered[metric].sum()/data[metric].sum()*100):.1f} %")
 
-    st.markdown("")  # espace
-    # Table style Bron
+    st.markdown("")
     render_product_table(filtered.to_dict("records"), sort_key=metric, show_photos=True)
 
-    # Chart
+    # =========================================================================
+    # COPILOTE PRODUITS — identifie les sous-performants + lecture de complexité
+    # =========================================================================
+    st.markdown("---")
+    st.markdown(
+        f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.14em;"
+        f"text-transform:uppercase;margin-bottom:4px;'>● COPILOTE</div>"
+        f"<div style='color:{COLORS['white']};font-size:16px;font-weight:700;margin-bottom:10px;'>"
+        f"Analyse de la carte</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Règle: produit sous-performant = < 300 € HT / mois / restaurant en moyenne
+    n_restos = len(selected_ids)
+    n_mois = max(1, period.days / 30.4)
+    threshold_ht = 300 * n_mois * n_restos  # seuil ajusté à la période + au nb de restos
+    losers = data[data["ht"] < threshold_ht].sort_values("ht").reset_index(drop=True)
+    n_total = len(data)
+    n_losers = len(losers)
+    pct_losers = (n_losers / n_total * 100) if n_total else 0
+
+    # CA capté par les sous-performants
+    ca_losers = losers["ht"].sum()
+    pct_ca_losers = (ca_losers / (data["ht"].sum() or 1)) * 100
+
+    # Couverture du top 20
+    top20 = data.sort_values("ht", ascending=False).head(20)
+    pct_ca_top20 = (top20["ht"].sum() / (data["ht"].sum() or 1)) * 100
+
+    # Synthèse
+    cc1, cc2, cc3 = st.columns(3)
+    cc1.metric("Carte totale", f"{n_total} produits")
+    cc2.metric("Sous-performants", f"{n_losers}", f"{pct_losers:.0f}% de la carte")
+    cc3.metric("CA capté par top 20", f"{pct_ca_top20:.0f} %")
+
+    if n_total > 100:
+        complexity = "🔴 Carte trop dense"
+        complexity_txt = (
+            f"**{n_total} produits actifs**, c'est lourd à gérer en cuisine et "
+            f"diluer la mémorisation client. Les 20 meilleurs captent **{pct_ca_top20:.0f}% du CA** — "
+            f"signe qu'une moitié de carte tire toute la performance."
+        )
+    elif n_total > 60:
+        complexity = "🟠 Carte un peu dense"
+        complexity_txt = (
+            f"**{n_total} produits**, dans la zone haute. À surveiller : si le top 20 "
+            f"fait > 80% du CA, c'est un signal pour simplifier."
+        )
+    else:
+        complexity = "🟢 Carte saine"
+        complexity_txt = f"**{n_total} produits**, taille raisonnable. Suivi standard."
+
+    st.markdown(
+        f"<div style='background:{COLORS['surface']};border:1px solid {COLORS['border']};"
+        f"border-radius:10px;padding:14px 16px;margin-top:12px;'>"
+        f"<div style='color:{COLORS['coral']};font-size:13px;font-weight:700;margin-bottom:6px;'>"
+        f"{complexity}</div>"
+        f"<div style='color:{COLORS['white']};font-size:13px;line-height:1.6;'>{complexity_txt}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    if n_losers > 0:
+        st.markdown("")
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+            f"text-transform:uppercase;margin:18px 0 8px;'>"
+            f"⚠ {n_losers} produits sous le seuil "
+            f"(&lt; 300€ HT / mois / resto, soit &lt; {threshold_ht:.0f}€ HT sur la période)"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        # Top 15 des pires
+        worst = losers.head(15).copy()
+        worst["mensuel_par_resto"] = worst["ht"] / (n_mois * n_restos)
+        recos = []
+        for _, r in worst.iterrows():
+            recos.append({
+                "img": r.get("img", ""),
+                "nom": r["nom"],
+                "ht": r["ht"],
+                "qte": r["qte"],
+                "prix_moy": r["prix_moy"],
+                "pct_ca": r["pct_ca"],
+            })
+        render_product_table(recos, sort_key="ht", show_photos=True)
+        st.caption(
+            f"💡 **Recommandation** : envisager de retirer les {n_losers} produits sous-performants. "
+            f"Ils ne représentent que {pct_ca_losers:.1f}% du CA et complexifient la cuisine "
+            f"(stock, formation, gestes). Garde-les si ce sont des marqueurs identitaires ou "
+            f"des trafic-générateurs (boissons en attente, accompagnements obligatoires)."
+        )
+
+    # Chart bar horizontal
     chart_n = min(20, len(filtered))
     if chart_n > 0:
         st.markdown("---")
-        col_value = "qte" if sort_by == "qte" else "ht"
         chart_data = filtered.head(chart_n).iloc[::-1]
         fig = px.bar(
-            chart_data, x=col_value, y="nom", orientation="h",
+            chart_data, x=metric, y="nom", orientation="h",
             color_discrete_sequence=[COLORS["coral"]],
         )
         fig.update_layout(
