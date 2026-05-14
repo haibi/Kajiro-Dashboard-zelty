@@ -265,8 +265,8 @@ st.caption(
 # ------------------------------------------------------------------
 # Onglets
 # ------------------------------------------------------------------
-tab_dashboard, tab_produits, tab_freq, tab_sources, tab_clients, tab_board = st.tabs(
-    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES", "CLIENTS", "BOARD"]
+tab_dashboard, tab_produits, tab_freq, tab_sources, tab_clients, tab_board, tab_profil = st.tabs(
+    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES", "CLIENTS", "BOARD", "👤 PROFIL"]
 )
 
 # =============================================================================
@@ -1175,7 +1175,7 @@ with tab_board:
         "Les actions disparaissent dès que la situation correspondante se normalise."
     )
 
-    # === Analyse IA Claude ===
+    # === Analyse IA Claude (rendue dans le BOARD, pas dans le profil) ===
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
     if api_key:
         st.markdown(
@@ -1184,7 +1184,6 @@ with tab_board:
             f"🤖 Analyse stratégique Claude</div>",
             unsafe_allow_html=True,
         )
-        # Construire le payload de faits
         facts = {
             "période": f"{period.start:%d/%m/%Y} → {period.end:%d/%m/%Y} ({period.days} j)",
             "restos_sélectionnés": [id_to_name.get(rid, str(rid)) for rid in selected_ids],
@@ -1194,12 +1193,9 @@ with tab_board:
             "n_commandes_précédent": len(orders_prev),
             "ticket_moyen": float(orders["ttc"].sum() / len(orders)) if not orders.empty else 0,
             "copilotes": {
-                "dashboard": co_dash,
-                "produits": co_prod,
-                "fréquentation": co_freq,
-                "origines": co_src,
-                "clients": co_cli,
-                "remises": co_disc,
+                "dashboard": co_dash, "produits": co_prod,
+                "fréquentation": co_freq, "origines": co_src,
+                "clients": co_cli, "remises": co_disc,
             },
         }
         with st.spinner("Claude analyse votre réseau…"):
@@ -1218,6 +1214,83 @@ with tab_board:
             "💡 Ajoute `ANTHROPIC_API_KEY` dans `.streamlit/secrets.toml` "
             "pour activer l'analyse stratégique générée par Claude."
         )
+
+# =============================================================================
+# TAB 7 — Profil utilisateur (changement mot de passe)
+# =============================================================================
+with tab_profil:
+    st.markdown(
+        f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;"
+        f"text-transform:uppercase;margin-bottom:2px;'>MON COMPTE</div>"
+        f"<div style='color:{COLORS['white']};font-size:22px;font-weight:700;margin-bottom:14px;'>"
+        f"Profil</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Carte info
+    user_rids = user.get("restaurant_ids")
+    scope_label = (
+        "Tous les restaurants"
+        if user_rids is None
+        else f"{len(user_rids)} restaurant(s) : " + ", ".join(
+            id_to_name.get(int(r), f"#{r}") for r in user_rids
+        )
+    )
+    st.markdown(
+        f"<div style='background:{COLORS['surface']};border:1px solid {COLORS['border']};"
+        f"border-radius:10px;padding:16px 20px;margin-bottom:24px;'>"
+        f"<div style='display:grid;grid-template-columns:140px 1fr;gap:10px 18px;font-size:13px;'>"
+        f"<div style='color:{COLORS['muted']};'>Email</div>"
+        f"<div style='color:{COLORS['white']};font-weight:600;'>{user['email']}</div>"
+        f"<div style='color:{COLORS['muted']};'>Rôle</div>"
+        f"<div style='color:{COLORS['coral']};font-weight:700;letter-spacing:0.08em;'>"
+        f"{user['role'].upper()}</div>"
+        f"<div style='color:{COLORS['muted']};'>Accès</div>"
+        f"<div style='color:{COLORS['white']};'>{scope_label}</div>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # === Changement de mot de passe ===
+    st.markdown(
+        f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+        f"text-transform:uppercase;margin:8px 0 10px;'>🔒 Changer mon mot de passe</div>",
+        unsafe_allow_html=True,
+    )
+
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        old_pw = st.text_input("Mot de passe actuel", type="password",
+                                  key="profil_old_pw", placeholder="•••••••••")
+    new_pw = st.text_input("Nouveau mot de passe", type="password",
+                              key="profil_new_pw", placeholder="Min. 8 caractères")
+    confirm_pw = st.text_input("Confirmer le nouveau mot de passe", type="password",
+                                  key="profil_confirm_pw")
+
+    if st.button("✅ Mettre à jour le mot de passe", type="primary"):
+        u_db = cache.get_user(user["email"])
+        if not u_db or not cache.verify_password(old_pw or "", u_db.get("password_hash")):
+            st.error("Mot de passe actuel incorrect.")
+        elif not new_pw or len(new_pw) < 8:
+            st.error("Le nouveau mot de passe doit faire au moins 8 caractères.")
+        elif new_pw != confirm_pw:
+            st.error("Les deux nouveaux mots de passe ne correspondent pas.")
+        elif new_pw == old_pw:
+            st.error("Le nouveau mot de passe doit être différent de l'actuel.")
+        else:
+            try:
+                cache.set_password(user["email"], new_pw)
+                st.success("✅ Mot de passe mis à jour. La session reste active.")
+                # Reset des champs
+                for k in ("profil_old_pw", "profil_new_pw", "profil_confirm_pw"):
+                    st.session_state[k] = ""
+            except ValueError as e:
+                st.error(str(e))
+
+    st.caption(
+        "🛈 Pour modifier ton email ou ton rôle, contacte un administrateur. "
+        "Pour gérer les autres utilisateurs (si tu es admin), va dans le sidebar."
+    )
 
 
 # ------------------------------------------------------------------
