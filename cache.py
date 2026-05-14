@@ -358,7 +358,8 @@ def query_orders(restaurant_ids: list[int], date_from: date, date_to: date) -> l
     with _conn() as c:
         with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
             cur.execute(
-                "SELECT order_id, restaurant_id, closed_at, closed_date, mode, source, origin, ttc, ht "
+                "SELECT order_id, restaurant_id, closed_at, closed_date, mode, source, origin, "
+                "ttc, ht, server_name, customer_id, customer_name, discount_ttc, discount_count "
                 "FROM orders WHERE restaurant_id = ANY(%s) "
                 "AND closed_date BETWEEN %s AND %s",
                 (restaurant_ids, date_from, date_to),
@@ -369,6 +370,8 @@ def query_orders(restaurant_ids: list[int], date_from: date, date_to: date) -> l
         r["closed_at"] = r["closed_at"].isoformat() if r["closed_at"] else None
         r["ttc"] = float(r["ttc"]) if r["ttc"] is not None else 0
         r["ht"] = float(r["ht"]) if r["ht"] is not None else 0
+        r["discount_ttc"] = float(r["discount_ttc"]) if r["discount_ttc"] is not None else 0
+        r["discount_count"] = int(r["discount_count"]) if r["discount_count"] is not None else 0
     return rows
 
 

@@ -1,11 +1,13 @@
-"""Copilotes contextuels : analyse rule-based des données pour générer des
-synthèses et recommandations actionnables.
+"""Copilotes : analyses rule-based des modules + analyse IA Claude sur le Board.
 
-Chaque copilote prend les dataframes pertinents + meta (période, restos)
-et retourne un dict {status, message, recommendation, badge}.
+Chaque copilote (rule-based) prend les dataframes pertinents + meta et retourne
+un dict {status, message, recommendation}.
+
+board_ai_analysis() appelle Claude API pour une analyse stratégique riche.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pandas as pd
@@ -19,6 +21,51 @@ STATUS_COLORS = {
     "ALERTE": (COLORS["coral"], "🔴"),
     "INFO": (COLORS["muted"], "ℹ️"),
 }
+
+CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MAX_TOKENS = 1500
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def board_ai_analysis(facts: dict, _api_key: str | None = None) -> str:
+    """Demande à Claude une analyse stratégique structurée du board.
+
+    `facts` : dict avec les KPIs et statuts de tous les modules.
+    Le résultat est mis en cache 15 min (mêmes facts → même analyse).
+    """
+    if not _api_key:
+        return ""
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        return "⚠ Module `anthropic` non installé. Lance `pip install anthropic`."
+
+    client = Anthropic(api_key=_api_key)
+    system = (
+        "Tu es un analyste business pour un groupe de restaurants de sushis (Kajirō Sushi, "
+        "7 établissements en France). Ton rôle est de produire des analyses concises, "
+        "actionables et basées sur les chiffres fournis. Tu écris en français. "
+        "Tu vouvoies. Tu ne diluis pas — chaque phrase doit apporter de l'info. "
+        "Tu identifies les leviers concrets et les pièges. Pas de baratin."
+    )
+    user_msg = (
+        "Voici l'état actuel du réseau Kajirō sur la période sélectionnée. "
+        "Donne une **analyse stratégique en 3 sections** :\n\n"
+        "## 🔎 Diagnostic\n(3-5 phrases. Signaux forts, positifs ou négatifs. "
+        "Cite les chiffres. Lis l'évolution vs période précédente.)\n\n"
+        "## ⚠ Risques\n(2-3 risques concrets à surveiller, en bullets.)\n\n"
+        "## ✅ Leviers prioritaires\n(3-5 actions priorisées par ROI, en bullets. "
+        "Mentionne l'horizon court/moyen/long terme pour chacune.)\n\n"
+        f"État du réseau :\n```json\n{json.dumps(facts, ensure_ascii=False, indent=2)}\n```"
+    )
+
+    resp = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=CLAUDE_MAX_TOKENS,
+        system=system,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    return resp.content[0].text if resp.content else ""
 
 
 def render_copilot_card(
@@ -231,8 +278,9 @@ def sources_copilot(orders: pd.DataFrame) -> dict:
     if by_src.empty:
         return {"status": "INFO", "message": "Pas de canal identifié.", "recommendation": None}
 
-    dom = by_src.sort_values("ca", ascending=False).iloc[0]
-    dom_src = by_src.index[0]
+    by_src_sorted = by_src.sort_values("ca", ascending=False)
+    dom_src = by_src_sorted.index[0]
+    dom = by_src_sorted.iloc[0]
     SOURCE_LABELS = {
         "pos": "POS", "kiosk": "Borne", "web": "Site web Zelty",
         "ubereats": "UberEats", "deliveroo": "Deliveroo", "phone": "Téléphone",

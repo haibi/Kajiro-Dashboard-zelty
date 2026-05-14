@@ -1154,6 +1154,50 @@ with tab_board:
         "Les actions disparaissent dès que la situation correspondante se normalise."
     )
 
+    # === Analyse IA Claude ===
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    if api_key:
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+            f"text-transform:uppercase;margin:32px 0 6px;'>"
+            f"🤖 Analyse stratégique Claude</div>",
+            unsafe_allow_html=True,
+        )
+        # Construire le payload de faits
+        facts = {
+            "période": f"{period.start:%d/%m/%Y} → {period.end:%d/%m/%Y} ({period.days} j)",
+            "restos_sélectionnés": [id_to_name.get(rid, str(rid)) for rid in selected_ids],
+            "ca_ttc_total": float(orders["ttc"].sum()) if not orders.empty else 0,
+            "ca_ttc_période_précédente": float(orders_prev["ttc"].sum()) if not orders_prev.empty else 0,
+            "n_commandes": len(orders),
+            "n_commandes_précédent": len(orders_prev),
+            "ticket_moyen": float(orders["ttc"].sum() / len(orders)) if not orders.empty else 0,
+            "copilotes": {
+                "dashboard": co_dash,
+                "produits": co_prod,
+                "fréquentation": co_freq,
+                "origines": co_src,
+                "clients": co_cli,
+                "remises": co_disc,
+            },
+        }
+        with st.spinner("Claude analyse votre réseau…"):
+            try:
+                analysis = copilots.board_ai_analysis(facts, _api_key=api_key)
+            except Exception as e:  # noqa: BLE001
+                analysis = f"⚠ Erreur API Claude : {e}"
+        if analysis:
+            st.markdown(
+                f"<div style='background:{COLORS['surface']};border:1px solid {COLORS['coral']}44;"
+                f"border-radius:12px;padding:18px 22px;'>{analysis}</div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info(
+            "💡 Ajoute `ANTHROPIC_API_KEY` dans `.streamlit/secrets.toml` "
+            "pour activer l'analyse stratégique générée par Claude."
+        )
+
 
 # ------------------------------------------------------------------
 # Sidebar
