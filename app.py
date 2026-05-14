@@ -237,7 +237,7 @@ with tab_reseau:
         try:
             closures = zelty_client.fetch_closures(
                 selected_ids, period.start, period.end,
-                on_progress=status.write,
+                _on_progress=status.write,
             )
             status.write(f"✓ {len(closures)} closures en cache")
         except zelty_client.ZeltyError as e:
@@ -245,7 +245,7 @@ with tab_reseau:
         try:
             orders = zelty_client.fetch_orders_summary(
                 selected_ids, period.start, period.end,
-                on_progress=status.write,
+                _on_progress=status.write,
             )
             status.write(f"✓ {len(orders)} commandes en cache")
         except zelty_client.ZeltyError as e:
