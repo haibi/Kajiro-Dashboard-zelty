@@ -28,6 +28,8 @@ from tenacity import (
     wait_exponential,
 )
 
+import cache
+
 PARIS = ZoneInfo("Europe/Paris")
 API_VERSION = "2.10"
 PER_PAGE = 200
@@ -138,120 +140,143 @@ def list_restaurants() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Closures (CA quotidien par restaurant)
 # ---------------------------------------------------------------------------
-def _fetch_closures_one(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
-    """Closures pour un resto sur une plage (chunkée en 31j max)."""
-    all_rows: list[dict] = []
-    for cf, ct in _date_chunks(date_from, date_to):
-        payload = _get(f"/{API_VERSION}/closures", params={
-            "restaurant_id": restaurant_id,
-            "from": _fmt_date(cf),
-            "to": _fmt_date(ct),
-        })
-        if isinstance(payload, dict):
-            all_rows.extend(payload.get("closures", []))
-    return all_rows
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+def _sync_closures_for_resto(rid: int, date_from: date, date_to: date) -> None:
+    """Synchronise les closures manquantes pour un resto vers la DB locale."""
+    today = date.today()
+    ranges = cache.missing_ranges(rid, "closures", date_from, date_to)
+    for cf, ct in ranges:
+        for chunk_from, chunk_to in _date_chunks(cf, ct):
+            payload = _get(f"/{API_VERSION}/closures", params={
+                "restaurant_id": rid,
+                "from": _fmt_date(chunk_from),
+                "to": _fmt_date(chunk_to),
+            })
+            items = payload.get("closures", []) if isinstance(payload, dict) else []
+            rows = [{
+                "date": c.get("date"),
+                "restaurant_id": int(c.get("id_restaurant")),
+                "turnover": _to_float(c.get("turnover")) / 100.0,
+                "taxes": _to_float(c.get("taxes")) / 100.0,
+            } for c in items if c.get("date")]
+            cache.store_closures(rows)
+            # Marquer comme syncé tous les jours < today
+            synced_days = []
+            d = chunk_from
+            while d <= chunk_to:
+                if d < today:
+                    synced_days.append(d)
+                d += timedelta(days=1)
+            cache.mark_synced("closures", rid, synced_days)
+
+
 def fetch_closures(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
 ) -> pd.DataFrame:
-    """CA et taxes quotidiens par restaurant.
+    """CA et taxes quotidiens — cache-first.
 
-    Colonnes : date, restaurant_id, turnover (€ TTC), taxes (€).
-    Les montants Zelty sont en centimes — convertis en euros ici.
+    Synchronise depuis Zelty UNIQUEMENT les jours non encore en cache + today.
+    Retour : DataFrame {date, restaurant_id, turnover (€), taxes (€)}.
     """
     if not restaurant_ids:
         return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
 
-    all_rows: list[dict] = []
+    cache.init_db()
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-        futures = {
-            pool.submit(_fetch_closures_one, rid, date_from, date_to): rid
-            for rid in restaurant_ids
-        }
+        futures = {pool.submit(_sync_closures_for_resto, rid, date_from, date_to): rid for rid in restaurant_ids}
         for fut in as_completed(futures):
             try:
-                for c in fut.result():
-                    all_rows.append({
-                        "date": c.get("date"),
-                        "restaurant_id": int(c.get("id_restaurant")),
-                        "turnover": _to_float(c.get("turnover")) / 100.0,
-                        "taxes": _to_float(c.get("taxes")) / 100.0,
-                    })
+                fut.result()
             except ZeltyError as e:
                 st.warning(f"Restaurant {futures[fut]} — {e}")
-    if not all_rows:
+
+    rows = cache.query_closures(list(restaurant_ids), date_from, date_to)
+    if not rows:
         return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
-    return pd.DataFrame(all_rows).sort_values(["restaurant_id", "date"]).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values(["restaurant_id", "date"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
 # Orders (résumés uniquement — pas de lignes produits dans v2.10)
 # ---------------------------------------------------------------------------
-def _fetch_orders_one(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
-    """Orders pour un resto sur une plage — chunks 31 j + pagination 200/page."""
-    all_rows: list[dict] = []
-    page_size = 200  # max accepté par Zelty
-    for cf, ct in _date_chunks(date_from, date_to):
-        page = 1
-        while True:
-            payload = _get(f"/{API_VERSION}/orders", params={
-                "restaurant_id": restaurant_id,
-                "from": _fmt_date(cf),
-                "to": _fmt_date(ct),
-                "limit": page_size,
-                "page": page,
-            })
-            batch = payload.get("orders", []) if isinstance(payload, dict) else []
-            if not batch:
-                break
-            all_rows.extend(batch)
-            if len(batch) < page_size:
-                break
-            page += 1
-            if page > 500:  # safety
-                break
-    return all_rows
 
 
-@st.cache_data(ttl=900, show_spinner=False)
+def _sync_orders_for_resto(rid: int, date_from: date, date_to: date) -> None:
+    """Sync incrémentale des commandes vers la DB locale (avec pagination)."""
+    today = date.today()
+    ranges = cache.missing_ranges(rid, "orders", date_from, date_to)
+    for cf, ct in ranges:
+        # Pour today : on supprime puis on réinsère pour avoir un état frais
+        if cf == today and ct == today:
+            cache.delete_orders_for_day(rid, today)
+
+        for chunk_from, chunk_to in _date_chunks(cf, ct):
+            page = 1
+            while True:
+                payload = _get(f"/{API_VERSION}/orders", params={
+                    "restaurant_id": rid,
+                    "from": _fmt_date(chunk_from),
+                    "to": _fmt_date(chunk_to),
+                    "limit": 200,
+                    "page": page,
+                })
+                orders = payload.get("orders", []) if isinstance(payload, dict) else []
+                if not orders:
+                    break
+                rows = []
+                for o in orders:
+                    closed_at = o.get("closed_at") or ""
+                    closed_date = closed_at[:10] if closed_at else _fmt_date(chunk_from)
+                    price = o.get("price") or {}
+                    rows.append({
+                        "order_id": int(o.get("id")),
+                        "restaurant_id": int(o.get("id_restaurant", rid)),
+                        "closed_at": closed_at,
+                        "closed_date": closed_date,
+                        "mode": o.get("mode"),
+                        "source": o.get("source"),
+                        "origin": o.get("origin_name"),
+                        "ttc": _to_float(price.get("final_amount_inc_tax")) / 100.0,
+                        "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
+                    })
+                cache.store_orders(rows)
+                if len(orders) < 200:
+                    break
+                page += 1
+                if page > 500:
+                    break
+            # Marquer comme syncé les jours < today dans ce chunk
+            synced_days = []
+            d = chunk_from
+            while d <= chunk_to:
+                if d < today:
+                    synced_days.append(d)
+                d += timedelta(days=1)
+            cache.mark_synced("orders", rid, synced_days)
+
+
 def fetch_orders_summary(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
 ) -> pd.DataFrame:
-    """Résumés de commandes : nb commandes, CA HT, CA TTC, mode, source par resto."""
+    """Commandes — cache-first. Renvoie les résumés (1 ligne par commande)."""
     if not restaurant_ids:
-        return pd.DataFrame(columns=["restaurant_id", "n_orders", "ht", "ttc", "by_mode"])
+        return pd.DataFrame()
 
-    rows: list[dict] = []
+    cache.init_db()
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-        futures = {
-            pool.submit(_fetch_orders_one, rid, date_from, date_to): rid
-            for rid in restaurant_ids
-        }
+        futures = {pool.submit(_sync_orders_for_resto, rid, date_from, date_to): rid for rid in restaurant_ids}
         for fut in as_completed(futures):
-            rid = futures[fut]
             try:
-                orders = fut.result()
+                fut.result()
             except ZeltyError as e:
-                st.warning(f"Restaurant {rid} — {e}")
-                continue
-            for o in orders:
-                price = o.get("price") or {}
-                rows.append({
-                    "restaurant_id": int(o.get("id_restaurant", rid)),
-                    "order_id": o.get("id"),
-                    "closed_at": o.get("closed_at"),
-                    "mode": o.get("mode"),
-                    "source": o.get("source"),
-                    "origin": o.get("origin_name"),
-                    "ttc": _to_float(price.get("final_amount_inc_tax")) / 100.0,
-                    "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
-                })
+                st.warning(f"Restaurant {futures[fut]} — {e}")
+
+    rows = cache.query_orders(list(restaurant_ids), date_from, date_to)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 

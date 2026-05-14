@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+import cache
 import periods
 import zelty_client
 from auth import logout, require_login
@@ -370,12 +371,30 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown("---")
-    if st.button("🔄 Rafraîchir les données"):
+    if st.button("🔄 Refetch today"):
+        st.cache_data.clear()
+        st.rerun()
+    if st.button("🗑️ Vider tout le cache"):
+        cache.clear_all()
         st.cache_data.clear()
         st.rerun()
     if st.button("Déconnexion"):
         logout()
         st.rerun()
+    st.markdown("---")
+
+    # Cache stats
+    s = cache.stats()
+    st.markdown(
+        f"<div style='font-size:11px;color:{COLORS['muted']};line-height:1.6;'>"
+        f"<b>Cache local SQLite</b><br>"
+        f"📅 {s['synced_days']} jours sync<br>"
+        f"🧾 {s['orders']} commandes<br>"
+        f"💰 {s['closures']} closures<br>"
+        f"{('📊 ' + s['oldest'] + ' → ' + s['newest']) if s['oldest'] else ''}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
     ok, msg = zelty_client.health_check()
     icon = "🟢" if ok else "🔴"

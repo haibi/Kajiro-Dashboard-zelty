@@ -22,6 +22,12 @@ venv/
 .pytest_cache/
 .mypy_cache/
 
+# --- Local cache DB ---
+data/
+*.db
+*.sqlite
+*.sqlite3
+
 # --- IDE / OS ---
 .DS_Store
 .idea/
