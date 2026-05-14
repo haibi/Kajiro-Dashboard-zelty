@@ -338,75 +338,20 @@ with tab_reseau:
         st.plotly_chart(fig, use_container_width=True)
 
 # =============================================================================
-# TAB 2 — Produits (CSV — l'endpoint Zelty dishes n'est pas trouvé)
+# TAB 2 — Produits (LIVE depuis order_items synchronisé avec expand[]=items)
 # =============================================================================
 with tab_produits:
-    # Bandeau discret
-    st.caption(
-        "⚠ L'API Zelty v2.10 n'expose pas les lignes de commande. "
-        "Importe les exports CSV « Les Produits » du back-office."
-    )
+    data = zelty_client.fetch_product_sales(selected_ids, period.start, period.end)
 
-    # Initialisation du store CSV en session
-    if "csv_data" not in st.session_state:
-        st.session_state["csv_data"] = {}  # {restaurant_name: dataframe}
-
-    uploaded = st.file_uploader(
-        "Importer un ou plusieurs CSV Zelty (un par restaurant)",
-        type=["csv"],
-        accept_multiple_files=True,
-        key="csv_upload",
-    )
-
-    if uploaded:
-        for f in uploaded:
-            try:
-                text = f.read().decode("latin1", errors="replace")
-                df = zelty_client.parse_zelty_csv(text)
-                if not df.empty:
-                    # Tente de matcher le nom du resto sur le nom du fichier
-                    matched = None
-                    fname_lower = f.name.lower()
-                    for name in all_names:
-                        if name.lower().replace("kajiro", "").strip() in fname_lower:
-                            matched = name
-                            break
-                    label = matched or f.name
-                    st.session_state["csv_data"][label] = df
-            except Exception as e:  # noqa: BLE001
-                st.error(f"{f.name} — {e}")
-
-    csv_data: dict[str, pd.DataFrame] = st.session_state["csv_data"]
-
-    if not csv_data:
-        st.info("Importe les CSV pour voir les best sellers réseau (ou par restaurant).")
+    if data.empty:
+        st.info(
+            "Aucune ligne produit en cache sur cette période. "
+            "Si tu viens d'ajouter de la donnée, attends que le backfill termine, "
+            "ou clique 🔄 Refetch today dans le sidebar."
+        )
         st.stop()
 
-    # Sélecteur sites CSV
-    csv_keys = list(csv_data.keys())
-    selected_csv = st.multiselect(
-        "Restaurants à inclure (CSV importés)",
-        csv_keys,
-        default=csv_keys,
-    )
-
-    if not selected_csv:
-        st.stop()
-
-    # Fusion : commandes + CA agrégés par nom de produit
-    merged: dict[str, dict[str, float]] = {}
-    for k in selected_csv:
-        for _, row in csv_data[k].iterrows():
-            acc = merged.setdefault(row["nom"], {"qte": 0.0, "ht": 0.0})
-            acc["qte"] += row["qte"]
-            acc["ht"] += row["ht"]
-    data = pd.DataFrame([
-        {"nom": n, "qte": int(v["qte"]), "ht": v["ht"],
-         "prix_moy": v["ht"] / v["qte"] if v["qte"] else 0}
-        for n, v in merged.items()
-    ])
     total_ht = data["ht"].sum() or 1
-    data["pct_ca"] = data["ht"] / total_ht * 100
 
     # Header : titre + toggles à droite (style Bron)
     htop, hctl = st.columns([2, 3])

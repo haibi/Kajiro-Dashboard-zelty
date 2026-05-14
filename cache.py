@@ -77,6 +77,24 @@ CREATE TABLE IF NOT EXISTS sync_log (
     PRIMARY KEY (resource, restaurant_id, date)
 );
 
+-- Lignes de commande (items) — un produit = une ligne dans une commande
+-- Récupérées via ?expand[]=items sur l'API Zelty
+CREATE TABLE IF NOT EXISTS order_items (
+    line_id       BIGINT      PRIMARY KEY,
+    order_id      BIGINT      NOT NULL,
+    restaurant_id INTEGER     NOT NULL,
+    closed_date   DATE        NOT NULL,
+    item_id       TEXT,
+    name          TEXT        NOT NULL,
+    item_type     TEXT,
+    ttc           NUMERIC(12,2) NOT NULL DEFAULT 0,
+    tax_amount    NUMERIC(12,2) NOT NULL DEFAULT 0,
+    modifiers     JSONB
+);
+CREATE INDEX IF NOT EXISTS idx_items_resto_date ON order_items (restaurant_id, closed_date);
+CREATE INDEX IF NOT EXISTS idx_items_item_id ON order_items (item_id);
+CREATE INDEX IF NOT EXISTS idx_items_order_id ON order_items (order_id);
+
 -- Utilisateurs autorisés + scope d'accès
 -- restaurant_ids NULL = accès à tous les restaurants
 -- restaurant_ids = []  = aucun accès (lock-out explicite)
@@ -239,6 +257,80 @@ def delete_orders_for_day(restaurant_id: int, day: date) -> None:
                 "DELETE FROM orders WHERE restaurant_id=%s AND closed_date=%s",
                 (restaurant_id, day),
             )
+
+
+def store_items(rows: list[dict]) -> None:
+    """Stocke les lignes-produit (1 ligne = 1 dish dans une commande)."""
+    if not rows:
+        return
+    import json as _json
+    with _conn() as c:
+        with c.cursor() as cur:
+            cur.executemany(
+                """INSERT INTO order_items
+                   (line_id, order_id, restaurant_id, closed_date, item_id, name, item_type, ttc, tax_amount, modifiers)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (line_id) DO UPDATE SET
+                     order_id      = EXCLUDED.order_id,
+                     restaurant_id = EXCLUDED.restaurant_id,
+                     closed_date   = EXCLUDED.closed_date,
+                     item_id       = EXCLUDED.item_id,
+                     name          = EXCLUDED.name,
+                     item_type     = EXCLUDED.item_type,
+                     ttc           = EXCLUDED.ttc,
+                     tax_amount    = EXCLUDED.tax_amount,
+                     modifiers     = EXCLUDED.modifiers""",
+                [(
+                    r["line_id"], r["order_id"], r["restaurant_id"], r["closed_date"],
+                    r.get("item_id"), r["name"], r.get("item_type"),
+                    r.get("ttc") or 0, r.get("tax_amount") or 0,
+                    _json.dumps(r.get("modifiers") or [], ensure_ascii=False),
+                ) for r in rows],
+            )
+
+
+def delete_items_for_day(restaurant_id: int, day: date) -> None:
+    with _conn() as c:
+        with c.cursor() as cur:
+            cur.execute(
+                "DELETE FROM order_items WHERE restaurant_id=%s AND closed_date=%s",
+                (restaurant_id, day),
+            )
+
+
+def query_product_sales(
+    restaurant_ids: list[int],
+    date_from: date,
+    date_to: date,
+) -> list[dict]:
+    """Agrège les ventes par produit : nom, item_id, quantité, CA TTC, CA HT."""
+    if not restaurant_ids:
+        return []
+    with _conn() as c:
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                """SELECT
+                     COALESCE(item_id, name) AS key,
+                     MAX(item_id)            AS item_id,
+                     name                    AS nom,
+                     COUNT(*)                AS qte,
+                     SUM(ttc)                AS ttc,
+                     SUM(ttc - tax_amount)   AS ht,
+                     MAX(item_type)          AS type
+                   FROM order_items
+                   WHERE restaurant_id = ANY(%s)
+                     AND closed_date BETWEEN %s AND %s
+                   GROUP BY name, COALESCE(item_id, name)
+                   ORDER BY ttc DESC""",
+                (restaurant_ids, date_from, date_to),
+            )
+            rows = cur.fetchall()
+    for r in rows:
+        r["qte"] = int(r["qte"])
+        r["ttc"] = float(r["ttc"] or 0)
+        r["ht"] = float(r["ht"] or 0)
+        r["prix_moy"] = (r["ttc"] / r["qte"]) if r["qte"] else 0
+    return rows
 
 
 def query_orders(restaurant_ids: list[int], date_from: date, date_to: date) -> list[dict]:

@@ -217,6 +217,7 @@ def _sync_orders_for_resto(
     for cf, ct in ranges:
         if cf == today and ct == today:
             cache.delete_orders_for_day(rid, today)
+            cache.delete_items_for_day(rid, today)
 
         for chunk_from, chunk_to in _date_chunks(cf, ct):
             chunk_completed = False
@@ -228,24 +229,28 @@ def _sync_orders_for_resto(
                         on_progress(
                             f"  · {chunk_from:%d/%m}–{chunk_to:%d/%m} page {page_num} (offset {offset})"
                         )
-                    payload = _get(f"/{API_VERSION}/orders", params={
-                        "restaurant_id": rid,
-                        "from": _fmt_date(chunk_from),
-                        "to": _fmt_date(chunk_to),
-                        "limit": 200,
-                        "offset": offset,
-                    })
+                    # IMPORTANT: expand[]=items → inclut la liste des dishes
+                    payload = _get(f"/{API_VERSION}/orders", params=[
+                        ("restaurant_id", rid),
+                        ("from", _fmt_date(chunk_from)),
+                        ("to", _fmt_date(chunk_to)),
+                        ("limit", 200),
+                        ("offset", offset),
+                        ("expand[]", "items"),
+                    ])
                     orders = payload.get("orders", []) if isinstance(payload, dict) else []
                     if not orders:
                         chunk_completed = True
                         break
-                    rows = []
+                    order_rows: list[dict] = []
+                    item_rows: list[dict] = []
                     for o in orders:
                         closed_at = o.get("closed_at") or ""
                         closed_date = closed_at[:10] if closed_at else _fmt_date(chunk_from)
                         price = o.get("price") or {}
-                        rows.append({
-                            "order_id": int(o.get("id")),
+                        oid_int = int(o.get("id"))
+                        order_rows.append({
+                            "order_id": oid_int,
                             "restaurant_id": int(o.get("id_restaurant", rid)),
                             "closed_at": closed_at,
                             "closed_date": closed_date,
@@ -255,13 +260,31 @@ def _sync_orders_for_resto(
                             "ttc": _to_float(price.get("final_amount_inc_tax")) / 100.0,
                             "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
                         })
-                    cache.store_orders(rows)
+                        # Items (dishes) de cette commande
+                        for it in (o.get("items") or []):
+                            ip = it.get("price") or {}
+                            tax = (ip.get("tax") or {}).get("tax_amount") if isinstance(ip.get("tax"), dict) else 0
+                            item_rows.append({
+                                "line_id": int(it["id"]),
+                                "order_id": oid_int,
+                                "restaurant_id": int(o.get("id_restaurant", rid)),
+                                "closed_date": closed_date,
+                                "item_id": it.get("item_id"),
+                                "name": (it.get("name") or "").strip(),
+                                "item_type": it.get("type"),
+                                "ttc": _to_float(ip.get("final_amount_inc_tax")) / 100.0,
+                                "tax_amount": _to_float(tax) / 100.0,
+                                "modifiers": it.get("modifiers") or [],
+                            })
+                    cache.store_orders(order_rows)
+                    if item_rows:
+                        cache.store_items(item_rows)
                     if len(orders) < 200:
                         chunk_completed = True
                         break
                     offset += 200
                     page_num += 1
-                    if offset > 100000:  # safety — pas plus de 100k orders / chunk
+                    if offset > 100000:
                         break
             finally:
                 # Marquer synchronisés les jours < today que le chunk a couverts.
@@ -301,6 +324,31 @@ def fetch_orders_summary(
 
     rows = cache.query_orders(list(restaurant_ids), date_from, date_to)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Ventes par produit (depuis order_items)
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_product_sales(
+    restaurant_ids: tuple[int, ...],
+    date_from: date,
+    date_to: date,
+) -> pd.DataFrame:
+    """Ventes agrégées par produit sur la période + restos sélectionnés.
+
+    Suppose que les orders ont déjà été synchronisés avec expand[]=items.
+    Lecture directe depuis Supabase (table order_items), instantané.
+    """
+    if not restaurant_ids:
+        return pd.DataFrame()
+    rows = cache.query_product_sales(list(restaurant_ids), date_from, date_to)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    total_ht = df["ht"].sum() or 1
+    df["pct_ca"] = df["ht"] / total_ht * 100
+    return df
 
 
 # ---------------------------------------------------------------------------
