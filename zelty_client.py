@@ -244,11 +244,18 @@ def _sync_orders_for_resto(
                         price = o.get("price") or {}
                         oid_int = int(o.get("id"))
 
-                        # Server (expand[]=user)
-                        user_obj = o.get("user") or {}
-                        server_name = (
-                            user_obj.get("name") or user_obj.get("first_name") or ""
-                        ).strip() if isinstance(user_obj, dict) else ""
+                        # Server (expand[]=user) — Zelty retourne une string ('Manager')
+                        user_obj = o.get("user")
+                        if isinstance(user_obj, str):
+                            server_name = user_obj.strip()
+                        elif isinstance(user_obj, dict):
+                            server_name = (
+                                user_obj.get("name")
+                                or user_obj.get("first_name")
+                                or ""
+                            ).strip()
+                        else:
+                            server_name = ""
 
                         # Customer (expand[]=customer)
                         customer_obj = o.get("customer") or {}
