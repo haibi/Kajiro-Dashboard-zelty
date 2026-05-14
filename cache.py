@@ -1,71 +1,89 @@
-"""Cache SQLite local pour Zelty.
+"""Cache persistant Postgres (Supabase) pour les ventes Zelty.
 
-Les ventes passées sont **immuables** : une fois une journée fermée (clôture passée),
-les données ne bougent plus. On les stocke localement et on n'interroge plus l'API
-pour ces dates.
-
-Stratégie :
-- Pour chaque (resource, restaurant_id, date) on note qu'on a synchronisé
-- Aujourd'hui (date courante) n'est JAMAIS marqué synchronisé → toujours re-fetch
-- Hier et avant : si déjà en base, retour direct sans appel API
-
-DB location : ./data/zelty_cache.db (gitignoré). Persistant entre les reruns
-Streamlit, wipé seulement aux redéploiements Streamlit Cloud (acceptable).
+Stratégie identique à la version SQLite, mais en ligne :
+- Les ventes passées (< today) sont **immuables** → stockées une fois, jamais re-fetchées
+- Aujourd'hui est toujours re-synchronisé (delete then insert)
+- Survit aux redéploiements Streamlit Cloud (DB hébergée chez Supabase)
 """
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, timedelta
 from typing import Iterator
 
-DB_PATH = Path(__file__).parent / "data" / "zelty_cache.db"
+import psycopg
+import streamlit as st
+from psycopg_pool import ConnectionPool
+
+
+# ---------------------------------------------------------------------------
+# Connection pool (singleton via st.cache_resource)
+# ---------------------------------------------------------------------------
+@st.cache_resource(show_spinner=False)
+def _pool() -> ConnectionPool:
+    url = st.secrets.get("SUPABASE_DB_URL")
+    if not url:
+        raise RuntimeError("SUPABASE_DB_URL manquant dans .streamlit/secrets.toml")
+    return ConnectionPool(
+        url,
+        min_size=1,
+        max_size=4,
+        timeout=30,
+        kwargs={"connect_timeout": 10},
+        open=True,
+    )
 
 
 @contextmanager
-def _conn() -> Iterator[sqlite3.Connection]:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    c = sqlite3.connect(DB_PATH, check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    try:
+def _conn() -> Iterator[psycopg.Connection]:
+    pool = _pool()
+    with pool.connection() as c:
         yield c
-        c.commit()
-    finally:
-        c.close()
 
 
-def init_db() -> None:
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS closures (
+    date         DATE        NOT NULL,
+    restaurant_id INTEGER    NOT NULL,
+    turnover     NUMERIC(14,2) NOT NULL,
+    taxes        NUMERIC(14,2) NOT NULL,
+    PRIMARY KEY (date, restaurant_id)
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    order_id      BIGINT      PRIMARY KEY,
+    restaurant_id INTEGER     NOT NULL,
+    closed_at     TIMESTAMPTZ,
+    closed_date   DATE        NOT NULL,
+    mode          TEXT,
+    source        TEXT,
+    origin        TEXT,
+    ttc           NUMERIC(12,2),
+    ht            NUMERIC(12,2)
+);
+CREATE INDEX IF NOT EXISTS idx_orders_resto_date
+    ON orders (restaurant_id, closed_date);
+
+CREATE TABLE IF NOT EXISTS sync_log (
+    resource      TEXT        NOT NULL,
+    restaurant_id INTEGER     NOT NULL,
+    date          DATE        NOT NULL,
+    synced_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (resource, restaurant_id, date)
+);
+"""
+
+
+@st.cache_resource(show_spinner=False)
+def init_db() -> bool:
+    """Crée les tables si elles n'existent pas. Idempotent. Retour True si OK."""
     with _conn() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS closures (
-            date TEXT NOT NULL,
-            restaurant_id INTEGER NOT NULL,
-            turnover REAL NOT NULL,
-            taxes REAL NOT NULL,
-            PRIMARY KEY (date, restaurant_id)
-        );
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id INTEGER PRIMARY KEY,
-            restaurant_id INTEGER NOT NULL,
-            closed_at TEXT,
-            closed_date TEXT NOT NULL,
-            mode TEXT,
-            source TEXT,
-            origin TEXT,
-            ttc REAL,
-            ht REAL
-        );
-        CREATE INDEX IF NOT EXISTS idx_orders_resto_date
-            ON orders (restaurant_id, closed_date);
-        CREATE TABLE IF NOT EXISTS sync_log (
-            resource TEXT NOT NULL,
-            restaurant_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            synced_at TEXT NOT NULL,
-            PRIMARY KEY (resource, restaurant_id, date)
-        );
-        """)
+        with c.cursor() as cur:
+            cur.execute(_SCHEMA)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -74,46 +92,45 @@ def init_db() -> None:
 def synced_days(resource: str, restaurant_id: int, date_from: date, date_to: date) -> set[date]:
     """Renvoie l'ensemble des jours déjà synchronisés (donc à NE PAS refaire)."""
     today = date.today()
-    cutoff = min(date_to, today - timedelta(days=1))  # aujourd'hui jamais "définitivement" sync
+    cutoff = min(date_to, today - timedelta(days=1))
     if cutoff < date_from:
         return set()
     with _conn() as c:
-        cur = c.execute(
-            "SELECT date FROM sync_log WHERE resource=? AND restaurant_id=? AND date BETWEEN ? AND ?",
-            (resource, restaurant_id, date_from.isoformat(), cutoff.isoformat()),
-        )
-        return {date.fromisoformat(row["date"]) for row in cur.fetchall()}
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT date FROM sync_log "
+                "WHERE resource=%s AND restaurant_id=%s AND date BETWEEN %s AND %s",
+                (resource, restaurant_id, date_from, cutoff),
+            )
+            return {row[0] for row in cur.fetchall()}
 
 
 def mark_synced(resource: str, restaurant_id: int, days: list[date]) -> None:
     if not days:
         return
-    now = datetime.utcnow().isoformat(timespec="seconds")
     with _conn() as c:
-        c.executemany(
-            "INSERT OR REPLACE INTO sync_log (resource, restaurant_id, date, synced_at) VALUES (?, ?, ?, ?)",
-            [(resource, restaurant_id, d.isoformat(), now) for d in days],
-        )
+        with c.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO sync_log (resource, restaurant_id, date) VALUES (%s, %s, %s) "
+                "ON CONFLICT (resource, restaurant_id, date) DO UPDATE SET synced_at = NOW()",
+                [(resource, restaurant_id, d) for d in days],
+            )
 
 
 def missing_ranges(restaurant_id: int, resource: str, date_from: date, date_to: date) -> list[tuple[date, date]]:
-    """Retourne les sous-plages [start, end] NON synchronisées + today (toujours).
-
-    Aujourd'hui est toujours inclus comme une plage à fetch (1 jour).
-    """
+    """Sous-plages [start, end] NON synchronisées + today (toujours)."""
     today = date.today()
     synced = synced_days(resource, restaurant_id, date_from, date_to)
 
     missing: list[date] = []
     d = date_from
     while d <= date_to:
-        if d == today:  # toujours re-fetch today
+        if d == today:
             pass
         elif d not in synced:
             missing.append(d)
         d += timedelta(days=1)
 
-    # Regrouper les jours consécutifs
     ranges: list[tuple[date, date]] = []
     if missing:
         start = missing[0]
@@ -127,7 +144,6 @@ def missing_ranges(restaurant_id: int, resource: str, date_from: date, date_to: 
                 prev = d
         ranges.append((start, prev))
 
-    # Aujourd'hui à part (toujours)
     if date_from <= today <= date_to:
         ranges.append((today, today))
 
@@ -135,98 +151,130 @@ def missing_ranges(restaurant_id: int, resource: str, date_from: date, date_to: 
 
 
 # ---------------------------------------------------------------------------
-# Closures storage
+# Closures
 # ---------------------------------------------------------------------------
 def store_closures(rows: list[dict]) -> None:
     if not rows:
         return
     with _conn() as c:
-        c.executemany(
-            "INSERT OR REPLACE INTO closures (date, restaurant_id, turnover, taxes) VALUES (?, ?, ?, ?)",
-            [(r["date"], r["restaurant_id"], float(r["turnover"]), float(r["taxes"])) for r in rows],
-        )
+        with c.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO closures (date, restaurant_id, turnover, taxes) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (date, restaurant_id) DO UPDATE "
+                "SET turnover = EXCLUDED.turnover, taxes = EXCLUDED.taxes",
+                [(r["date"], r["restaurant_id"], r["turnover"], r["taxes"]) for r in rows],
+            )
 
 
 def query_closures(restaurant_ids: list[int], date_from: date, date_to: date) -> list[dict]:
     if not restaurant_ids:
         return []
-    placeholders = ",".join("?" * len(restaurant_ids))
     with _conn() as c:
-        cur = c.execute(
-            f"SELECT date, restaurant_id, turnover, taxes FROM closures "
-            f"WHERE restaurant_id IN ({placeholders}) AND date BETWEEN ? AND ? "
-            f"ORDER BY restaurant_id, date",
-            [*restaurant_ids, date_from.isoformat(), date_to.isoformat()],
-        )
-        return [dict(row) for row in cur.fetchall()]
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                "SELECT date, restaurant_id, turnover, taxes FROM closures "
+                "WHERE restaurant_id = ANY(%s) AND date BETWEEN %s AND %s "
+                "ORDER BY restaurant_id, date",
+                (restaurant_ids, date_from, date_to),
+            )
+            rows = cur.fetchall()
+    # Convert Decimal → float pour pandas
+    for r in rows:
+        r["date"] = r["date"].isoformat() if r["date"] else None
+        r["turnover"] = float(r["turnover"])
+        r["taxes"] = float(r["taxes"])
+    return rows
 
 
 # ---------------------------------------------------------------------------
-# Orders storage
+# Orders
 # ---------------------------------------------------------------------------
 def store_orders(rows: list[dict]) -> None:
     if not rows:
         return
     with _conn() as c:
-        c.executemany(
-            """INSERT OR REPLACE INTO orders
-               (order_id, restaurant_id, closed_at, closed_date, mode, source, origin, ttc, ht)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [(
-                r["order_id"], r["restaurant_id"],
-                r.get("closed_at"), r["closed_date"],
-                r.get("mode"), r.get("source"), r.get("origin"),
-                float(r.get("ttc") or 0), float(r.get("ht") or 0),
-            ) for r in rows],
-        )
+        with c.cursor() as cur:
+            cur.executemany(
+                """INSERT INTO orders
+                   (order_id, restaurant_id, closed_at, closed_date, mode, source, origin, ttc, ht)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (order_id) DO UPDATE SET
+                     restaurant_id = EXCLUDED.restaurant_id,
+                     closed_at = EXCLUDED.closed_at,
+                     closed_date = EXCLUDED.closed_date,
+                     mode = EXCLUDED.mode,
+                     source = EXCLUDED.source,
+                     origin = EXCLUDED.origin,
+                     ttc = EXCLUDED.ttc,
+                     ht = EXCLUDED.ht""",
+                [(
+                    r["order_id"], r["restaurant_id"],
+                    r.get("closed_at") or None, r["closed_date"],
+                    r.get("mode"), r.get("source"), r.get("origin"),
+                    r.get("ttc") or 0, r.get("ht") or 0,
+                ) for r in rows],
+            )
 
 
 def delete_orders_for_day(restaurant_id: int, day: date) -> None:
-    """Pour today on supprime puis on réinsère (commandes mises à jour en live)."""
     with _conn() as c:
-        c.execute(
-            "DELETE FROM orders WHERE restaurant_id=? AND closed_date=?",
-            (restaurant_id, day.isoformat()),
-        )
+        with c.cursor() as cur:
+            cur.execute(
+                "DELETE FROM orders WHERE restaurant_id=%s AND closed_date=%s",
+                (restaurant_id, day),
+            )
 
 
 def query_orders(restaurant_ids: list[int], date_from: date, date_to: date) -> list[dict]:
     if not restaurant_ids:
         return []
-    placeholders = ",".join("?" * len(restaurant_ids))
     with _conn() as c:
-        cur = c.execute(
-            f"SELECT order_id, restaurant_id, closed_at, closed_date, mode, source, origin, ttc, ht "
-            f"FROM orders WHERE restaurant_id IN ({placeholders}) "
-            f"AND closed_date BETWEEN ? AND ?",
-            [*restaurant_ids, date_from.isoformat(), date_to.isoformat()],
-        )
-        return [dict(row) for row in cur.fetchall()]
+        with c.cursor(row_factory=psycopg.rows.dict_row) as cur:
+            cur.execute(
+                "SELECT order_id, restaurant_id, closed_at, closed_date, mode, source, origin, ttc, ht "
+                "FROM orders WHERE restaurant_id = ANY(%s) "
+                "AND closed_date BETWEEN %s AND %s",
+                (restaurant_ids, date_from, date_to),
+            )
+            rows = cur.fetchall()
+    for r in rows:
+        r["closed_date"] = r["closed_date"].isoformat() if r["closed_date"] else None
+        r["closed_at"] = r["closed_at"].isoformat() if r["closed_at"] else None
+        r["ttc"] = float(r["ttc"]) if r["ttc"] is not None else 0
+        r["ht"] = float(r["ht"]) if r["ht"] is not None else 0
+    return rows
 
 
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 def stats() -> dict:
-    init_db()
-    with _conn() as c:
-        n_closures = c.execute("SELECT COUNT(*) AS n FROM closures").fetchone()["n"]
-        n_orders = c.execute("SELECT COUNT(*) AS n FROM orders").fetchone()["n"]
-        n_synced = c.execute("SELECT COUNT(*) AS n FROM sync_log").fetchone()["n"]
-        oldest = c.execute("SELECT MIN(date) AS d FROM closures").fetchone()["d"]
-        newest = c.execute("SELECT MAX(date) AS d FROM closures").fetchone()["d"]
-    return {
-        "closures": n_closures,
-        "orders": n_orders,
-        "synced_days": n_synced,
-        "oldest": oldest,
-        "newest": newest,
-    }
+    try:
+        init_db()
+        with _conn() as c:
+            with c.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM closures")
+                n_closures = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM orders")
+                n_orders = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM sync_log")
+                n_synced = cur.fetchone()[0]
+                cur.execute("SELECT MIN(date), MAX(date) FROM closures")
+                oldest, newest = cur.fetchone()
+        return {
+            "closures": n_closures,
+            "orders": n_orders,
+            "synced_days": n_synced,
+            "oldest": oldest.isoformat() if oldest else None,
+            "newest": newest.isoformat() if newest else None,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)[:120], "closures": 0, "orders": 0, "synced_days": 0,
+                "oldest": None, "newest": None}
 
 
 def clear_all() -> None:
-    """Pour le bouton 'Rafraîchir' — vide tout le cache."""
     with _conn() as c:
-        c.execute("DELETE FROM closures")
-        c.execute("DELETE FROM orders")
-        c.execute("DELETE FROM sync_log")
+        with c.cursor() as cur:
+            cur.execute("TRUNCATE closures, orders, sync_log")
