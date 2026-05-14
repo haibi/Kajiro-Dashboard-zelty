@@ -11,7 +11,7 @@ import streamlit as st
 import periods
 import zelty_client
 from auth import logout, require_login
-from components import render_ranking_table
+from components import render_product_table, render_ranking_table
 from theme import COLORS, header, inject_css
 
 FAVICON = Path(__file__).parent / "assets" / "favicon.svg"
@@ -301,6 +301,17 @@ with tab_produits:
     if top_n != 9999:
         filtered = filtered.head(top_n)
 
+    # Enrichissement avec photos depuis le catalogue Zelty
+    try:
+        catalog = zelty_client.fetch_catalog_items()
+        filtered = zelty_client.match_csv_to_catalog(filtered, catalog)
+        nb_matched = (filtered["img"].astype(bool)).sum()
+        if nb_matched:
+            st.caption(f"📷 {nb_matched}/{len(filtered)} produits enrichis avec photo depuis le catalogue Zelty.")
+    except zelty_client.ZeltyError as e:
+        st.caption(f"Catalogue non chargé : {e}")
+        filtered["img"] = ""
+
     # KPIs produits
     pk1, pk2, pk3, pk4 = st.columns(4)
     pk1.metric("CA HT total", f"{total_ht/1000:,.1f} K€".replace(",", " "))
@@ -308,27 +319,8 @@ with tab_produits:
     pk3.metric("Références", f"{len(data)}")
     pk4.metric(f"Top {len(filtered)} couvre", f"{(filtered['ht'].sum()/total_ht*100):.1f}%")
 
-    # Table
-    display = filtered.copy()
-    display.insert(0, "#", range(1, len(display) + 1))
-    display = display.rename(columns={
-        "nom": "Produit", "qte": "Unités", "ht": "CA HT (€)",
-        "prix_moy": "Prix moy. (€)", "pct_ca": "% CA",
-    })[["#", "Produit", "CA HT (€)", "Unités", "Prix moy. (€)", "% CA"]]
-
-    st.dataframe(
-        display, hide_index=True, use_container_width=True,
-        height=min(600, 60 + len(display) * 36),
-        column_config={
-            "CA HT (€)": st.column_config.ProgressColumn(
-                format="%.0f €", min_value=0,
-                max_value=float(display["CA HT (€)"].max() or 1),
-            ),
-            "Unités": st.column_config.NumberColumn(format="%d"),
-            "Prix moy. (€)": st.column_config.NumberColumn(format="%.2f €"),
-            "% CA": st.column_config.NumberColumn(format="%.2f %%"),
-        },
-    )
+    # Table produits avec photos
+    render_product_table(filtered.to_dict("records"), sort_key=sort_by, show_photos=True)
 
     # Chart
     chart_n = min(20, len(filtered))

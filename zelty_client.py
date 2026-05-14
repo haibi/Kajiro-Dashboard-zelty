@@ -192,16 +192,28 @@ def fetch_closures(
 # Orders (résumés uniquement — pas de lignes produits dans v2.10)
 # ---------------------------------------------------------------------------
 def _fetch_orders_one(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
-    """Orders pour un resto sur une plage (chunkée en 31j max)."""
+    """Orders pour un resto sur une plage — chunks 31 j + pagination 200/page."""
     all_rows: list[dict] = []
+    page_size = 200  # max accepté par Zelty
     for cf, ct in _date_chunks(date_from, date_to):
-        payload = _get(f"/{API_VERSION}/orders", params={
-            "restaurant_id": restaurant_id,
-            "from": _fmt_date(cf),
-            "to": _fmt_date(ct),
-        })
-        if isinstance(payload, dict):
-            all_rows.extend(payload.get("orders", []))
+        page = 1
+        while True:
+            payload = _get(f"/{API_VERSION}/orders", params={
+                "restaurant_id": restaurant_id,
+                "from": _fmt_date(cf),
+                "to": _fmt_date(ct),
+                "limit": page_size,
+                "page": page,
+            })
+            batch = payload.get("orders", []) if isinstance(payload, dict) else []
+            if not batch:
+                break
+            all_rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+            if page > 500:  # safety
+                break
     return all_rows
 
 
@@ -241,6 +253,88 @@ def fetch_orders_summary(
                     "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
                 })
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+# ---------------------------------------------------------------------------
+# Catalog (plats avec photos + descriptions)
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_catalog_items() -> pd.DataFrame:
+    """Retourne tous les plats (type=dish) de tous les catalogues, dédupliqués.
+
+    Colonnes : id, internal_id, nom, description, img, prix, color
+    """
+    catalogs_payload = _get(f"/{API_VERSION}/catalogs")
+    catalogs = catalogs_payload.get("catalogs", []) if isinstance(catalogs_payload, dict) else []
+
+    seen: dict[str, dict] = {}
+    for cat in catalogs:
+        cid = cat.get("id")
+        if not cid:
+            continue
+        try:
+            detail = _get(f"/{API_VERSION}/catalogs/{cid}")
+        except ZeltyError:
+            continue
+        items = (detail.get("catalog") or {}).get("items", [])
+        if isinstance(items, str):  # parfois stringifié
+            import ast
+            try:
+                items = ast.literal_eval(items)
+            except Exception:  # noqa: BLE001
+                continue
+        for it in items:
+            if it.get("type") != "dish":
+                continue
+            iid = it.get("id") or it.get("internal_id")
+            if not iid or iid in seen:
+                continue
+            price_obj = it.get("price") or {}
+            price_cents = _to_float(price_obj.get("price") if isinstance(price_obj, dict) else 0)
+            seen[iid] = {
+                "id": iid,
+                "internal_id": it.get("internal_id"),
+                "nom": (it.get("name") or "").strip(),
+                "description": it.get("description") or "",
+                "img": it.get("img") or "",
+                "prix": price_cents / 100.0,
+                "color": it.get("color") or "",
+            }
+    return pd.DataFrame(list(seen.values()))
+
+
+def match_csv_to_catalog(csv_df: pd.DataFrame, catalog_df: pd.DataFrame) -> pd.DataFrame:
+    """Enrichit un dataframe CSV produit (col 'nom') avec img + description du catalogue.
+
+    Matching : exact (lowercase strip) puis substring (CSV name appears in catalog name).
+    """
+    if csv_df.empty:
+        return csv_df
+
+    csv = csv_df.copy()
+    if catalog_df.empty:
+        csv["img"] = ""
+        csv["description"] = ""
+        return csv
+
+    cat = catalog_df.copy()
+    cat["_norm"] = cat["nom"].str.lower().str.strip()
+    cat_map_exact = dict(zip(cat["_norm"], cat[["img", "description"]].to_dict("records")))
+
+    def lookup(name: str) -> dict[str, str]:
+        n = (name or "").lower().strip()
+        if n in cat_map_exact:
+            return cat_map_exact[n]
+        # Substring match (left = right or right contains left)
+        for cat_norm, row in cat_map_exact.items():
+            if n and (n in cat_norm or cat_norm in n):
+                return row
+        return {"img": "", "description": ""}
+
+    enriched = csv["nom"].apply(lookup)
+    csv["img"] = enriched.apply(lambda r: r["img"])
+    csv["description"] = enriched.apply(lambda r: r["description"])
+    return csv
 
 
 # ---------------------------------------------------------------------------
