@@ -33,7 +33,9 @@ PARIS = ZoneInfo("Europe/Paris")
 API_VERSION = "2.10"
 PER_PAGE = 200
 MAX_DAYS_PER_REQUEST = 31         # /orders refuse les intervalles > 31 j
-THROTTLE_SECONDS = 0.15           # pause minimale entre appels API
+# Rate-limit Zelty mesuré : ~5 req par burst de 1 sec, recovery ~5 sec.
+# Throttle 1 req/sec = aucun 429 en régime stable.
+THROTTLE_SECONDS = 1.05
 
 # Restaurants accessibles via la clé groupe mais hors périmètre Kajirō.
 # In Bun (id 6328) — concept séparé, ne fait pas partie des 7 enseignes Kajirō.
@@ -69,19 +71,19 @@ def _base_url() -> str:
 
 @retry(
     reraise=True,
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=1, max=15),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=5),
     retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
 )
 def _get(path: str, params: dict[str, Any] | None = None) -> Any:
-    """GET avec retry réseau + back-off long pour 429 (rate-limit Zelty)."""
+    """GET avec throttle proactif (1 req/sec) + retry court sur 429."""
     url = f"{_base_url()}{path}"
-    time.sleep(THROTTLE_SECONDS)  # throttle proactif
-    for attempt in range(5):
+    time.sleep(THROTTLE_SECONDS)  # throttle proactif → évite 429
+    for attempt in range(3):
         resp = requests.get(url, headers=_headers(), params=params, timeout=30)
         if resp.status_code == 429:
-            wait_s = int(resp.headers.get("Retry-After", "3")) + attempt * 2
-            time.sleep(min(wait_s, 30))
+            wait_s = max(int(resp.headers.get("Retry-After", "5")), 5)
+            time.sleep(wait_s)
             continue
         break
     if resp.status_code == 401:
@@ -207,10 +209,14 @@ def fetch_closures(
 # ---------------------------------------------------------------------------
 
 
-def _sync_orders_for_resto(rid: int, date_from: date, date_to: date) -> None:
+def _sync_orders_for_resto(
+    rid: int,
+    date_from: date,
+    date_to: date,
+    on_progress: Callable[[str], None] | None = None,
+) -> None:
     """Sync incrémentale des commandes — marque les jours synchronisés même
-    si la pagination échoue partiellement (la prochaine session reprendra
-    depuis l'état actuel sans tout re-télécharger)."""
+    si la pagination échoue partiellement."""
     today = date.today()
     ranges = cache.missing_ranges(rid, "orders", date_from, date_to)
     for cf, ct in ranges:
@@ -222,6 +228,10 @@ def _sync_orders_for_resto(rid: int, date_from: date, date_to: date) -> None:
             try:
                 page = 1
                 while True:
+                    if on_progress:
+                        on_progress(
+                            f"  · {chunk_from:%d/%m}–{chunk_to:%d/%m} page {page}"
+                        )
                     payload = _get(f"/{API_VERSION}/orders", params={
                         "restaurant_id": rid,
                         "from": _fmt_date(chunk_from),
@@ -286,7 +296,7 @@ def fetch_orders_summary(
         if on_progress:
             on_progress(f"🧾 Commandes · resto {i}/{n} (id {rid})")
         try:
-            _sync_orders_for_resto(rid, date_from, date_to)
+            _sync_orders_for_resto(rid, date_from, date_to, on_progress=on_progress)
         except ZeltyError as e:
             if on_progress:
                 on_progress(f"⚠ resto {rid} orders : {e}")
