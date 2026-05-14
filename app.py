@@ -228,32 +228,12 @@ tab_reseau, tab_produits = st.tabs(["RÉSEAU", "PRODUITS"])
 # TAB 1 — Réseau (depuis closures + orders)
 # =============================================================================
 with tab_reseau:
-    closures = pd.DataFrame()
-    orders = pd.DataFrame()
-    with st.status(
-        f"Synchronisation · {len(selected_ids)} restos · {period.days} jours",
-        expanded=True,
-    ) as status:
-        try:
-            closures = zelty_client.fetch_closures(
-                selected_ids, period.start, period.end,
-                _on_progress=status.write,
-            )
-            status.write(f"✓ {len(closures)} closures en cache")
-        except zelty_client.ZeltyError as e:
-            status.write(f"❌ Closures : {e}")
-        try:
-            orders = zelty_client.fetch_orders_summary(
-                selected_ids, period.start, period.end,
-                _on_progress=status.write,
-            )
-            status.write(f"✓ {len(orders)} commandes en cache")
-        except zelty_client.ZeltyError as e:
-            status.write(f"⚠ Orders : {e}")
-        status.update(label="Synchronisation terminée", state="complete", expanded=False)
+    # LECTURE PURE Supabase — instantané. Pour synchroniser today, utiliser le bouton sidebar.
+    closures = zelty_client.fetch_closures(selected_ids, period.start, period.end)
+    orders = zelty_client.fetch_orders_summary(selected_ids, period.start, period.end)
 
     if closures.empty and orders.empty:
-        st.info("Aucune donnée sur cette période pour les restaurants sélectionnés.")
+        st.info("Aucune donnée en cache pour cette période. Si tu attends today, clique 🔄 Sync today dans le sidebar.")
         st.stop()
 
     # KPIs
@@ -478,8 +458,14 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown("---")
-    if st.button("🔄 Refetch today"):
-        st.cache_data.clear()
+    if st.button("🔄 Sync today depuis Zelty"):
+        with st.status("Synchronisation today…", expanded=True) as s:
+            stats = zelty_client.sync_today(
+                tuple(restos_df["id"].astype(int).tolist()),
+                on_progress=s.write,
+            )
+            s.update(label=f"Today sync ✓ ({stats.get('orders', 0)} orders en DB)",
+                     state="complete", expanded=False)
         st.rerun()
     if st.button("🗑️ Vider tout le cache"):
         cache.clear_all()

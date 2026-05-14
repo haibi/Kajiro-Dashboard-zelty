@@ -171,28 +171,19 @@ def _sync_closures_for_resto(rid: int, date_from: date, date_to: date) -> None:
                     cache.mark_synced("closures", rid, synced)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_closures(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
-    _on_progress: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
-    """CA et taxes quotidiens — cache mémoire 5 min + DB Supabase persistante."""
+    """LECTURE PURE Supabase — instantané. Pas d'appel API.
+
+    Pour mettre à jour today, utiliser sync_today() depuis le sidebar.
+    """
     if not restaurant_ids:
         return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
-
     cache.init_db()
-    n = len(restaurant_ids)
-    for i, rid in enumerate(restaurant_ids, start=1):
-        if _on_progress:
-            _on_progress(f"💰 Closures · resto {i}/{n} (id {rid})")
-        try:
-            _sync_closures_for_resto(rid, date_from, date_to)
-        except ZeltyError as e:
-            if _on_progress:
-                _on_progress(f"⚠ resto {rid} closures : {e}")
-
     rows = cache.query_closures(list(restaurant_ids), date_from, date_to)
     if not rows:
         return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
@@ -300,30 +291,49 @@ def _sync_orders_for_resto(
                     cache.mark_synced("orders", rid, synced)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_orders_summary(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
-    _on_progress: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
-    """Commandes — cache mémoire 5 min + DB Supabase persistante."""
+    """LECTURE PURE Supabase — instantané."""
     if not restaurant_ids:
         return pd.DataFrame()
-
     cache.init_db()
-    n = len(restaurant_ids)
-    for i, rid in enumerate(restaurant_ids, start=1):
-        if _on_progress:
-            _on_progress(f"🧾 Commandes · resto {i}/{n} (id {rid})")
-        try:
-            _sync_orders_for_resto(rid, date_from, date_to, on_progress=_on_progress)
-        except ZeltyError as e:
-            if _on_progress:
-                _on_progress(f"⚠ resto {rid} orders : {e}")
-
     rows = cache.query_orders(list(restaurant_ids), date_from, date_to)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def sync_today(
+    restaurant_ids: tuple[int, ...],
+    on_progress: Callable[[str], None] | None = None,
+) -> dict:
+    """Synchronise UNIQUEMENT aujourd'hui depuis Zelty vers Supabase.
+
+    À appeler explicitement (bouton sidebar). Met à jour closures + orders +
+    order_items pour la journée en cours, et marque le cache @cache_data comme stale.
+    """
+    today = date.today()
+    cache.init_db()
+    for i, rid in enumerate(restaurant_ids, start=1):
+        if on_progress:
+            on_progress(f"☀️ Today · resto {i}/{len(restaurant_ids)} (id {rid})")
+        try:
+            _sync_closures_for_resto(rid, today, today)
+        except ZeltyError as e:
+            if on_progress:
+                on_progress(f"⚠ R{rid} closures : {e}")
+        try:
+            _sync_orders_for_resto(rid, today, today, on_progress=on_progress)
+        except ZeltyError as e:
+            if on_progress:
+                on_progress(f"⚠ R{rid} orders : {e}")
+    # Vide le cache mémoire pour forcer une relecture DB
+    fetch_closures.clear()
+    fetch_orders_summary.clear()
+    fetch_product_sales.clear()
+    return cache.stats()
 
 
 # ---------------------------------------------------------------------------
