@@ -195,20 +195,36 @@ if preset == "Personnalisé":
         st.stop()
 period = periods.from_preset(preset, custom_range)
 
-# Sélection restaurants
-st.markdown(
-    f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
-    f"text-transform:uppercase;margin:14px 0 6px;'>Restaurants</div>",
-    unsafe_allow_html=True,
-)
+# Sélection restaurants (pills cliquables — toutes visibles d'un coup d'œil)
 all_names = restos_df["name"].tolist()
-selected_names = st.multiselect(
+
+# Init session state à tous au premier passage
+if "restos_pills" not in st.session_state:
+    st.session_state["restos_pills"] = list(all_names)
+
+header_cols = st.columns([3, 1, 1])
+with header_cols[0]:
+    st.markdown(
+        f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
+        f"text-transform:uppercase;margin:14px 0 6px;'>Restaurants</div>",
+        unsafe_allow_html=True,
+    )
+with header_cols[1]:
+    if st.button("✓ Tous", key="restos_all", use_container_width=True):
+        st.session_state["restos_pills"] = list(all_names)
+        st.rerun()
+with header_cols[2]:
+    if st.button("✕ Aucun", key="restos_none", use_container_width=True):
+        st.session_state["restos_pills"] = []
+        st.rerun()
+
+selected_names = st.pills(
     "Restaurants",
     all_names,
-    default=all_names,
-    key="restos",
+    selection_mode="multi",
+    key="restos_pills",
     label_visibility="collapsed",
-)
+) or []
 
 if not selected_names:
     st.warning("Sélectionne au moins un restaurant.")
