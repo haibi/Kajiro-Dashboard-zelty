@@ -227,7 +227,9 @@ st.caption(
 # ------------------------------------------------------------------
 # Onglets
 # ------------------------------------------------------------------
-tab_dashboard, tab_produits = st.tabs(["DASHBOARD", "PRODUITS"])
+tab_dashboard, tab_produits, tab_freq, tab_sources = st.tabs(
+    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES"]
+)
 
 # =============================================================================
 # TAB 1 — Réseau (depuis closures + orders)
@@ -571,6 +573,229 @@ with tab_produits:
             height=max(280, chart_n * 22), showlegend=False,
         )
         st.plotly_chart(fig, use_container_width=True)
+
+# =============================================================================
+# TAB 3 — Fréquentation (jours × heures)
+# =============================================================================
+DAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+DAYS_MAP = {
+    "Monday": "Lundi", "Tuesday": "Mardi", "Wednesday": "Mercredi",
+    "Thursday": "Jeudi", "Friday": "Vendredi", "Saturday": "Samedi", "Sunday": "Dimanche",
+}
+
+with tab_freq:
+    if orders.empty:
+        st.info("Aucune commande sur la période sélectionnée.")
+    else:
+        df = orders.copy()
+        df["dt"] = pd.to_datetime(df["closed_at"], errors="coerce")
+        df = df.dropna(subset=["dt"])
+        df["hour"] = df["dt"].dt.hour
+        df["day_en"] = df["dt"].dt.day_name()
+        df["day"] = df["day_en"].map(DAYS_MAP)
+
+        # Header
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;"
+            f"text-transform:uppercase;margin-bottom:2px;'>MODULE FRÉQUENTATION</div>"
+            f"<div style='color:{COLORS['white']};font-size:20px;font-weight:700;margin-bottom:6px;'>"
+            f"Quand viennent les clients</div>"
+            f"<div style='color:{COLORS['muted']};font-size:11px;margin-bottom:14px;'>"
+            f"{period.start:%a %d %b} → {period.end:%a %d %b} · {len(df):,} commandes</div>".replace(",", " "),
+            unsafe_allow_html=True,
+        )
+
+        # === KPIs ===
+        peak_hour = df.groupby("hour").size().idxmax() if not df.empty else 0
+        peak_day = df.groupby("day").size().reindex(DAYS_FR, fill_value=0).idxmax()
+        avg_per_day = df.groupby(df["dt"].dt.date).size().mean()
+        weekend_share = df[df["day"].isin(["Samedi", "Dimanche"])].shape[0] / len(df) * 100
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Pic horaire", f"{peak_hour}h")
+        k2.metric("Pic jour", peak_day)
+        k3.metric("Cmds / jour (moy.)", f"{avg_per_day:.0f}")
+        k4.metric("Week-end", f"{weekend_share:.0f} %")
+
+        st.markdown("---")
+
+        # === 2 charts côte à côte : heures + jours ===
+        cc1, cc2 = st.columns(2)
+
+        with cc1:
+            st.markdown(
+                f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+                f"text-transform:uppercase;margin-bottom:4px;'>Heures de visite</div>",
+                unsafe_allow_html=True,
+            )
+            hours_df = df.groupby("hour").size().reset_index(name="n")
+            hours_df = hours_df[hours_df["n"] > 0]
+            fig_h = px.bar(hours_df, x="hour", y="n",
+                            color_discrete_sequence=[COLORS["coral"]])
+            fig_h.update_layout(
+                paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
+                font=dict(family="Poppins, sans-serif", color=COLORS["white"]),
+                margin=dict(l=10, r=10, t=10, b=10),
+                xaxis=dict(gridcolor=COLORS["border"], title="Heure",
+                            tickmode="linear", tick0=0, dtick=1),
+                yaxis=dict(gridcolor=COLORS["border"], title="Commandes"),
+                height=300, showlegend=False,
+            )
+            st.plotly_chart(fig_h, use_container_width=True)
+
+        with cc2:
+            st.markdown(
+                f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+                f"text-transform:uppercase;margin-bottom:4px;'>Jours de la semaine</div>",
+                unsafe_allow_html=True,
+            )
+            days_df = df.groupby("day").size().reindex(DAYS_FR, fill_value=0).reset_index(name="n")
+            fig_d = px.bar(days_df, x="day", y="n",
+                            color_discrete_sequence=[COLORS["amber"]])
+            fig_d.update_layout(
+                paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
+                font=dict(family="Poppins, sans-serif", color=COLORS["white"]),
+                margin=dict(l=10, r=10, t=10, b=10),
+                xaxis=dict(gridcolor=COLORS["border"], title=None),
+                yaxis=dict(gridcolor=COLORS["border"], title="Commandes"),
+                height=300, showlegend=False,
+            )
+            st.plotly_chart(fig_d, use_container_width=True)
+
+        # === Heatmap ===
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+            f"text-transform:uppercase;margin:8px 0 4px;'>Cartographie horaire · jour × heure</div>",
+            unsafe_allow_html=True,
+        )
+        heat = (
+            df.groupby(["day", "hour"]).size()
+            .unstack(fill_value=0)
+            .reindex(DAYS_FR)
+            .fillna(0)
+            .astype(int)
+        )
+        # Ne garder que les heures avec des commandes
+        active_hours = [h for h in heat.columns if heat[h].sum() > 0]
+        heat = heat[active_hours] if active_hours else heat
+        fig_heat = px.imshow(
+            heat.values,
+            x=[f"{h}h" for h in heat.columns],
+            y=heat.index.tolist(),
+            color_continuous_scale=[[0, COLORS["bg"]], [0.5, COLORS["coral_dim"]], [1, COLORS["amber"]]],
+            aspect="auto",
+            text_auto=True,
+        )
+        fig_heat.update_layout(
+            paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
+            font=dict(family="Poppins, sans-serif", color=COLORS["white"], size=11),
+            margin=dict(l=10, r=10, t=10, b=10),
+            xaxis=dict(title=None, side="bottom"),
+            yaxis=dict(title=None),
+            coloraxis_colorbar=dict(title="Cmds"),
+            height=320,
+        )
+        fig_heat.update_traces(textfont=dict(size=10))
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+
+# =============================================================================
+# TAB 4 — Origines des ventes (canaux)
+# =============================================================================
+SOURCE_LABELS = {
+    "pos": "Sur place / POS",
+    "kiosk": "Borne",
+    "web": "Site web Zelty",
+    "ubereats": "UberEats",
+    "deliveroo": "Deliveroo",
+    "phone": "Téléphone",
+    "kiosq": "Borne",
+}
+MODE_LABELS = {
+    "eat_in": "Sur place",
+    "takeaway": "À emporter",
+    "delivery": "Livraison",
+    "click_and_collect": "C&C",
+}
+
+with tab_sources:
+    if orders.empty:
+        st.info("Aucune commande sur la période sélectionnée.")
+    else:
+        df = orders.copy()
+        df["source_label"] = df["source"].map(SOURCE_LABELS).fillna(df["source"].fillna("Inconnu"))
+        df["mode_label"] = df["mode"].map(MODE_LABELS).fillna(df["mode"].fillna("Inconnu"))
+
+        # Header
+        total_ca = df["ttc"].sum()
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;"
+            f"text-transform:uppercase;margin-bottom:2px;'>MODULE ORIGINES</div>"
+            f"<div style='color:{COLORS['white']};font-size:20px;font-weight:700;margin-bottom:6px;'>"
+            f"Plateformes &amp; canaux</div>"
+            f"<div style='color:{COLORS['muted']};font-size:11px;margin-bottom:14px;'>"
+            f"{period.start:%a %d %b} → {period.end:%a %d %b} · {total_ca:,.0f} € TTC · {len(df):,} tickets"
+            f"</div>".replace(",", " "),
+            unsafe_allow_html=True,
+        )
+
+        # === Par source (canal d'entrée) ===
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+            f"text-transform:uppercase;margin:8px 0 6px;'>Par canal d'entrée</div>",
+            unsafe_allow_html=True,
+        )
+        by_src = (
+            df.groupby("source_label").agg(ca=("ttc", "sum"), n=("order_id", "count"))
+            .reset_index().sort_values("ca", ascending=False)
+        )
+        by_src["pct"] = by_src["ca"] / by_src["ca"].sum() * 100
+        by_src["ticket_moy"] = by_src["ca"] / by_src["n"]
+
+        # Table custom
+        max_ca = by_src["ca"].max() or 1
+        for _, row in by_src.iterrows():
+            pct_bar = (row["ca"] / max_ca) * 100
+            st.markdown(
+                f"<div style='padding:10px 0;border-bottom:1px solid {COLORS['border']};'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>"
+                f"<div><div style='color:{COLORS['white']};font-size:14px;font-weight:600;'>{row['source_label']}</div>"
+                f"<div style='color:{COLORS['muted']};font-size:11px;'>{int(row['n']):,} tickets · ticket moy. {row['ticket_moy']:.2f} €</div></div>"
+                f"<div style='text-align:right;'>"
+                f"<div style='color:{COLORS['white']};font-size:15px;font-weight:700;'>{row['ca']:,.0f} €</div>"
+                f"<div style='color:{COLORS['coral']};font-size:11px;'>{row['pct']:.1f} % du CA</div>"
+                f"</div></div>"
+                f"<div style='width:100%;height:3px;background:{COLORS['dim']};border-radius:2px;'>"
+                f"<div style='width:{pct_bar:.0f}%;height:100%;background:{COLORS['coral']};border-radius:2px;'></div>"
+                f"</div></div>".replace(",", " "),
+                unsafe_allow_html=True,
+            )
+
+        # === Par mode de consommation ===
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+            f"text-transform:uppercase;margin:24px 0 6px;'>Par mode de consommation</div>",
+            unsafe_allow_html=True,
+        )
+        by_mode = (
+            df.groupby("mode_label").agg(ca=("ttc", "sum"), n=("order_id", "count"))
+            .reset_index().sort_values("ca", ascending=False)
+        )
+        by_mode["pct"] = by_mode["ca"] / by_mode["ca"].sum() * 100
+
+        # Donut chart
+        fig_donut = px.pie(by_mode, values="ca", names="mode_label", hole=0.6,
+                            color_discrete_sequence=[COLORS["coral"], COLORS["amber"], "#8B5CF6", "#06B6D4"])
+        fig_donut.update_traces(textposition="outside", textinfo="label+percent",
+                                  textfont=dict(family="Poppins", color=COLORS["white"], size=12))
+        fig_donut.update_layout(
+            paper_bgcolor=COLORS["bg"], plot_bgcolor=COLORS["surface"],
+            font=dict(family="Poppins, sans-serif", color=COLORS["white"]),
+            margin=dict(l=10, r=10, t=10, b=10),
+            height=320, showlegend=False,
+        )
+        st.plotly_chart(fig_donut, use_container_width=True)
+
 
 # ------------------------------------------------------------------
 # Sidebar
