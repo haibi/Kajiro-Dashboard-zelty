@@ -64,8 +64,19 @@ CREATE TABLE IF NOT EXISTS orders (
     source        TEXT,
     origin        TEXT,
     ttc           NUMERIC(12,2),
-    ht            NUMERIC(12,2)
+    ht            NUMERIC(12,2),
+    server_name   TEXT,
+    customer_id   BIGINT,
+    customer_name TEXT,
+    discount_ttc  NUMERIC(12,2) DEFAULT 0,
+    discount_count INTEGER DEFAULT 0
 );
+-- Migration: ajouter colonnes si table existait sans (idempotent)
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS server_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_id BIGINT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_name TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_ttc NUMERIC(12,2) DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_count INTEGER DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_orders_resto_date
     ON orders (restaurant_id, closed_date);
 
@@ -230,22 +241,30 @@ def store_orders(rows: list[dict]) -> None:
         with c.cursor() as cur:
             cur.executemany(
                 """INSERT INTO orders
-                   (order_id, restaurant_id, closed_at, closed_date, mode, source, origin, ttc, ht)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   (order_id, restaurant_id, closed_at, closed_date, mode, source, origin, ttc, ht,
+                    server_name, customer_id, customer_name, discount_ttc, discount_count)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (order_id) DO UPDATE SET
-                     restaurant_id = EXCLUDED.restaurant_id,
-                     closed_at = EXCLUDED.closed_at,
-                     closed_date = EXCLUDED.closed_date,
-                     mode = EXCLUDED.mode,
-                     source = EXCLUDED.source,
-                     origin = EXCLUDED.origin,
-                     ttc = EXCLUDED.ttc,
-                     ht = EXCLUDED.ht""",
+                     restaurant_id  = EXCLUDED.restaurant_id,
+                     closed_at      = EXCLUDED.closed_at,
+                     closed_date    = EXCLUDED.closed_date,
+                     mode           = EXCLUDED.mode,
+                     source         = EXCLUDED.source,
+                     origin         = EXCLUDED.origin,
+                     ttc            = EXCLUDED.ttc,
+                     ht             = EXCLUDED.ht,
+                     server_name    = EXCLUDED.server_name,
+                     customer_id    = EXCLUDED.customer_id,
+                     customer_name  = EXCLUDED.customer_name,
+                     discount_ttc   = EXCLUDED.discount_ttc,
+                     discount_count = EXCLUDED.discount_count""",
                 [(
                     r["order_id"], r["restaurant_id"],
                     r.get("closed_at") or None, r["closed_date"],
                     r.get("mode"), r.get("source"), r.get("origin"),
                     r.get("ttc") or 0, r.get("ht") or 0,
+                    r.get("server_name"), r.get("customer_id"), r.get("customer_name"),
+                    r.get("discount_ttc") or 0, r.get("discount_count") or 0,
                 ) for r in rows],
             )
 

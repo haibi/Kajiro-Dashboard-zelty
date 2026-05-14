@@ -220,7 +220,7 @@ def _sync_orders_for_resto(
                         on_progress(
                             f"  · {chunk_from:%d/%m}–{chunk_to:%d/%m} page {page_num} (offset {offset})"
                         )
-                    # IMPORTANT: expand[]=items → inclut la liste des dishes
+                    # expand[] : items (dishes) + user (serveur) + customer + discounts
                     payload = _get(f"/{API_VERSION}/orders", params=[
                         ("restaurant_id", rid),
                         ("from", _fmt_date(chunk_from)),
@@ -228,6 +228,9 @@ def _sync_orders_for_resto(
                         ("limit", 200),
                         ("offset", offset),
                         ("expand[]", "items"),
+                        ("expand[]", "user"),
+                        ("expand[]", "customer"),
+                        ("expand[]", "price.discounts"),
                     ])
                     orders = payload.get("orders", []) if isinstance(payload, dict) else []
                     if not orders:
@@ -240,6 +243,39 @@ def _sync_orders_for_resto(
                         closed_date = closed_at[:10] if closed_at else _fmt_date(chunk_from)
                         price = o.get("price") or {}
                         oid_int = int(o.get("id"))
+
+                        # Server (expand[]=user)
+                        user_obj = o.get("user") or {}
+                        server_name = (
+                            user_obj.get("name") or user_obj.get("first_name") or ""
+                        ).strip() if isinstance(user_obj, dict) else ""
+
+                        # Customer (expand[]=customer)
+                        customer_obj = o.get("customer") or {}
+                        if isinstance(customer_obj, dict) and customer_obj.get("id"):
+                            customer_id = int(customer_obj["id"])
+                            customer_name = (
+                                customer_obj.get("nice_name")
+                                or customer_obj.get("name")
+                                or " ".join(filter(None, [customer_obj.get("first_name"), customer_obj.get("last_name")]))
+                                or ""
+                            ).strip()
+                        else:
+                            customer_id = None
+                            customer_name = (o.get("first_name") or "").strip() or None
+
+                        # Discounts (expand[]=price.discounts)
+                        discounts = price.get("discounts") or []
+                        if isinstance(discounts, list):
+                            discount_count = len(discounts)
+                            discount_ttc = sum(
+                                _to_float((d or {}).get("amount_inc_tax", 0))
+                                for d in discounts
+                            ) / 100.0
+                        else:
+                            discount_count = 0
+                            discount_ttc = 0.0
+
                         order_rows.append({
                             "order_id": oid_int,
                             "restaurant_id": int(o.get("id_restaurant", rid)),
@@ -250,6 +286,11 @@ def _sync_orders_for_resto(
                             "origin": o.get("origin_name"),
                             "ttc": _to_float(price.get("final_amount_inc_tax")) / 100.0,
                             "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
+                            "server_name": server_name or None,
+                            "customer_id": customer_id,
+                            "customer_name": customer_name,
+                            "discount_ttc": discount_ttc,
+                            "discount_count": discount_count,
                         })
                         # Items (dishes) de cette commande
                         for it in (o.get("items") or []):

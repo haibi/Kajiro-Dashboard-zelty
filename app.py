@@ -227,8 +227,8 @@ st.caption(
 # ------------------------------------------------------------------
 # Onglets
 # ------------------------------------------------------------------
-tab_dashboard, tab_produits, tab_freq, tab_sources = st.tabs(
-    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES"]
+tab_dashboard, tab_produits, tab_freq, tab_sources, tab_clients = st.tabs(
+    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES", "CLIENTS"]
 )
 
 # =============================================================================
@@ -276,6 +276,27 @@ with tab_dashboard:
     st.caption(
         f"vs période précédente : {prev.start:%d/%m} → {prev.end:%d/%m} ({prev.days} j)"
     )
+
+    # === Indicateurs clients & remises (si data dispo) ===
+    if not orders.empty and "customer_id" in orders.columns:
+        n_identified = orders["customer_id"].notna().sum()
+        n_anonymous = orders["customer_id"].isna().sum()
+        pct_anon = (n_anonymous / len(orders) * 100) if len(orders) else 0
+        anon_ca = orders.loc[orders["customer_id"].isna(), "ttc"].sum()
+        disc_total = orders["discount_ttc"].sum() if "discount_ttc" in orders.columns else 0
+        disc_count = int(orders["discount_count"].sum()) if "discount_count" in orders.columns else 0
+
+        ci1, ci2, ci3, ci4 = st.columns(4)
+        ci1.metric("Clients identifiés", f"{int(n_identified):,}".replace(",", " "))
+        ci2.metric("Cmds anonymes", f"{int(n_anonymous):,}".replace(",", " "),
+                    f"{pct_anon:.0f} % du volume",
+                    delta_color="off")
+        ci3.metric("CA anonyme", f"{anon_ca/1000:,.1f} K€".replace(",", " "),
+                    "💡 fidéliser ces clients", delta_color="off")
+        ci4.metric("Remises", f"{disc_total:,.0f} €".replace(",", " "),
+                    f"{disc_count} actions", delta_color="off")
+    else:
+        st.caption("⏳ Données clients & remises en cours de synchronisation (re-backfill avec expand[]=customer,user,price.discounts)")
 
     # Tableau par restaurant — source de vérité = orders (closures juste pour jours)
     if not orders.empty:
@@ -574,6 +595,52 @@ with tab_produits:
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    # =========================================================================
+    # Tableau remises par employé
+    # =========================================================================
+    if not orders.empty and "discount_count" in orders.columns:
+        disc_orders = orders[orders["discount_count"] > 0]
+        if not disc_orders.empty:
+            st.markdown("---")
+            st.markdown(
+                f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.14em;"
+                f"text-transform:uppercase;margin-bottom:4px;'>MODULE</div>"
+                f"<div style='color:{COLORS['white']};font-size:18px;font-weight:700;margin-bottom:10px;'>"
+                f"Remises par employé</div>",
+                unsafe_allow_html=True,
+            )
+            by_server = (
+                disc_orders.assign(server=disc_orders["server_name"].fillna("(non identifié)"))
+                .groupby("server")
+                .agg(
+                    ttc_remise=("discount_ttc", "sum"),
+                    nb_remises=("discount_count", "sum"),
+                    nb_cmds=("order_id", "count"),
+                    ca_total=("ttc", "sum"),
+                )
+                .reset_index()
+                .sort_values("ttc_remise", ascending=False)
+            )
+            by_server["pct_orders"] = by_server["nb_cmds"] / len(orders) * 100
+            by_server["pct_remise_ca"] = by_server["ttc_remise"] / (orders["ttc"].sum() or 1) * 100
+
+            max_disc = by_server["ttc_remise"].max() or 1
+            for _, r in by_server.iterrows():
+                bar = (r["ttc_remise"] / max_disc) * 100
+                st.markdown(
+                    f"<div style='padding:10px 0;border-bottom:1px solid {COLORS['border']};'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>"
+                    f"<div><div style='color:{COLORS['white']};font-size:13px;font-weight:600;'>{r['server']}</div>"
+                    f"<div style='color:{COLORS['muted']};font-size:11px;'>"
+                    f"{int(r['nb_remises'])} remises sur {int(r['nb_cmds'])} cmds · {r['pct_remise_ca']:.1f} % du CA</div></div>"
+                    f"<div style='text-align:right;color:{COLORS['coral']};font-size:14px;font-weight:700;'>"
+                    f"−{r['ttc_remise']:,.0f} €</div></div>"
+                    f"<div style='width:100%;height:3px;background:{COLORS['dim']};border-radius:2px;'>"
+                    f"<div style='width:{bar:.0f}%;height:100%;background:{COLORS['coral']};border-radius:2px;'></div>"
+                    f"</div></div>".replace(",", " "),
+                    unsafe_allow_html=True,
+                )
+
 # =============================================================================
 # TAB 3 — Fréquentation (jours × heures)
 # =============================================================================
@@ -795,6 +862,125 @@ with tab_sources:
             height=320, showlegend=False,
         )
         st.plotly_chart(fig_donut, use_container_width=True)
+
+
+# =============================================================================
+# TAB 5 — Clients (style Bron)
+# =============================================================================
+with tab_clients:
+    if orders.empty or "customer_id" not in orders.columns:
+        st.info(
+            "Données clients pas encore synchronisées. "
+            "Re-backfill avec expand[]=customer en cours."
+        )
+    else:
+        df = orders.copy()
+        df_id = df[df["customer_id"].notna()].copy()
+        df_an = df[df["customer_id"].isna()].copy()
+
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;"
+            f"text-transform:uppercase;margin-bottom:2px;'>MODULE CLIENTS</div>"
+            f"<div style='color:{COLORS['white']};font-size:20px;font-weight:700;margin-bottom:6px;'>"
+            f"Base clients</div>"
+            f"<div style='color:{COLORS['muted']};font-size:11px;margin-bottom:14px;'>"
+            f"{period.start:%a %d %b} → {period.end:%a %d %b}</div>",
+            unsafe_allow_html=True,
+        )
+
+        # === KPIs principaux ===
+        n_id = df_id["customer_id"].nunique()
+        n_anon_cmds = len(df_an)
+        cmd_per_id = df_id.groupby("customer_id").size() if not df_id.empty else pd.Series(dtype=int)
+        n_recurrents = int((cmd_per_id >= 2).sum())
+        ca_per_id = df_id.groupby("customer_id")["ttc"].sum() if not df_id.empty else pd.Series(dtype=float)
+        vip_threshold = ca_per_id.quantile(0.95) if len(ca_per_id) >= 20 else 0
+        n_vip = int((ca_per_id >= vip_threshold).sum()) if vip_threshold else 0
+
+        ck1, ck2, ck3, ck4 = st.columns(4)
+        ck1.metric("Clients identifiés", f"{n_id:,}".replace(",", " "))
+        ck2.metric("Cmds anonymes", f"{n_anon_cmds:,}".replace(",", " "),
+                    help="Pas de compte client lié — opportunité de fidélisation")
+        ck3.metric("Récurrents (≥ 2 cmds)", f"{n_recurrents:,}".replace(",", " "),
+                    f"{(n_recurrents/n_id*100 if n_id else 0):.0f} % des identifiés")
+        ck4.metric("VIP (top 5 %)", f"{n_vip:,}".replace(",", " "),
+                    f"seuil {vip_threshold:.0f} €" if vip_threshold else "—")
+
+        # === Panier moyen comparaison ===
+        st.markdown("---")
+        tm_id = df_id["ttc"].sum() / len(df_id) if len(df_id) else 0
+        tm_an = df_an["ttc"].sum() / len(df_an) if len(df_an) else 0
+        delta_tm = (tm_id - tm_an) / tm_an * 100 if tm_an else None
+
+        st.markdown(
+            f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+            f"text-transform:uppercase;margin-bottom:6px;'>Panier moyen · identifiés vs anonymes</div>",
+            unsafe_allow_html=True,
+        )
+        pc1, pc2 = st.columns(2)
+        pc1.metric("Identifiés", f"{tm_id:.2f} €",
+                    f"{delta_tm:+.1f} % vs anonymes" if delta_tm is not None else None)
+        pc2.metric("Anonymes", f"{tm_an:.2f} €" if tm_an else "—",
+                    "(non identifiés Zelty)")
+
+        # === Répartition par engagement (segments) ===
+        if not cmd_per_id.empty:
+            st.markdown(
+                f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+                f"text-transform:uppercase;margin:18px 0 6px;'>Répartition par engagement</div>",
+                unsafe_allow_html=True,
+            )
+            buckets = [
+                ("1 cmd", lambda n: n == 1, "#9CA3AF"),
+                ("2-4 cmds", lambda n: 2 <= n <= 4, "#60A5FA"),
+                ("5-9 cmds", lambda n: 5 <= n <= 9, COLORS["amber"]),
+                ("10-15 cmds", lambda n: 10 <= n <= 15, COLORS["coral"]),
+                ("> 15 cmds", lambda n: n > 15, "#34D399"),
+            ]
+            for label, pred, color in buckets:
+                count = int(cmd_per_id.apply(pred).sum())
+                pct = count / n_id * 100 if n_id else 0
+                st.markdown(
+                    f"<div style='padding:8px 0;border-bottom:1px solid {COLORS['border']};'>"
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>"
+                    f"<div style='color:{COLORS['white']};font-size:13px;font-weight:500;'>{label}</div>"
+                    f"<div style='color:{COLORS['muted']};font-size:12px;'>"
+                    f"<span style='color:{color};font-weight:700;'>{count}</span> · {pct:.1f} %</div></div>"
+                    f"<div style='width:100%;height:4px;background:{COLORS['dim']};border-radius:2px;'>"
+                    f"<div style='width:{pct:.0f}%;height:100%;background:{color};border-radius:2px;'></div>"
+                    f"</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+        # === Top clients ===
+        if not df_id.empty:
+            st.markdown(
+                f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.1em;"
+                f"text-transform:uppercase;margin:24px 0 6px;'>Top 20 clients par CA</div>",
+                unsafe_allow_html=True,
+            )
+            top_clients = (
+                df_id.groupby(["customer_id"])
+                .agg(name=("customer_name", "first"),
+                     ca=("ttc", "sum"),
+                     n_cmd=("order_id", "count"))
+                .reset_index().sort_values("ca", ascending=False).head(20)
+            )
+            top_clients["panier"] = top_clients["ca"] / top_clients["n_cmd"]
+            for _, r in top_clients.iterrows():
+                display_name = r["name"] or f"Client #{int(r['customer_id'])}"
+                ca_fmt = f"{r['ca']:,.0f} €".replace(",", " ")
+                st.markdown(
+                    f"<div style='padding:8px 0;border-bottom:1px solid {COLORS['border']};"
+                    f"display:flex;justify-content:space-between;align-items:center;'>"
+                    f"<div><div style='color:{COLORS['white']};font-size:13px;font-weight:600;'>"
+                    f"{display_name}</div>"
+                    f"<div style='color:{COLORS['muted']};font-size:11px;'>"
+                    f"{int(r['n_cmd'])} cmds · panier {r['panier']:.2f} €</div></div>"
+                    f"<div style='color:{COLORS['coral']};font-size:14px;font-weight:700;'>"
+                    f"{ca_fmt}</div></div>",
+                    unsafe_allow_html=True,
+                )
 
 
 # ------------------------------------------------------------------
