@@ -106,7 +106,7 @@ st.set_page_config(
     page_title="Kajirō Sushi · Analytics",
     page_icon=str(FAVICON) if FAVICON.exists() else None,
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 inject_css()
 

@@ -33,8 +33,9 @@ import cache
 PARIS = ZoneInfo("Europe/Paris")
 API_VERSION = "2.10"
 PER_PAGE = 200
-MAX_PARALLEL = 2                  # Zelty rate-limit agressif
+MAX_PARALLEL = 1                  # Zelty rate-limit très agressif — serial
 MAX_DAYS_PER_REQUEST = 31         # /orders refuse les intervalles > 31 j
+THROTTLE_SECONDS = 0.4            # pause entre chaque appel API pour rester sous le rate-limit
 
 # Restaurants accessibles via la clé groupe mais hors périmètre Kajirō.
 # In Bun (id 6328) — concept séparé, ne fait pas partie des 7 enseignes Kajirō.
@@ -77,6 +78,7 @@ def _base_url() -> str:
 def _get(path: str, params: dict[str, Any] | None = None) -> Any:
     """GET avec retry réseau + back-off long pour 429 (rate-limit Zelty)."""
     url = f"{_base_url()}{path}"
+    time.sleep(THROTTLE_SECONDS)  # throttle proactif
     for attempt in range(5):
         resp = requests.get(url, headers=_headers(), params=params, timeout=30)
         if resp.status_code == 429:
@@ -143,32 +145,36 @@ def list_restaurants() -> pd.DataFrame:
 
 
 def _sync_closures_for_resto(rid: int, date_from: date, date_to: date) -> None:
-    """Synchronise les closures manquantes pour un resto vers la DB locale."""
+    """Synchronise les closures manquantes pour un resto vers la DB."""
     today = date.today()
     ranges = cache.missing_ranges(rid, "closures", date_from, date_to)
     for cf, ct in ranges:
         for chunk_from, chunk_to in _date_chunks(cf, ct):
-            payload = _get(f"/{API_VERSION}/closures", params={
-                "restaurant_id": rid,
-                "from": _fmt_date(chunk_from),
-                "to": _fmt_date(chunk_to),
-            })
-            items = payload.get("closures", []) if isinstance(payload, dict) else []
-            rows = [{
-                "date": c.get("date"),
-                "restaurant_id": int(c.get("id_restaurant")),
-                "turnover": _to_float(c.get("turnover")) / 100.0,
-                "taxes": _to_float(c.get("taxes")) / 100.0,
-            } for c in items if c.get("date")]
-            cache.store_closures(rows)
-            # Marquer comme syncé tous les jours < today
-            synced_days = []
-            d = chunk_from
-            while d <= chunk_to:
-                if d < today:
-                    synced_days.append(d)
-                d += timedelta(days=1)
-            cache.mark_synced("closures", rid, synced_days)
+            ok = False
+            try:
+                payload = _get(f"/{API_VERSION}/closures", params={
+                    "restaurant_id": rid,
+                    "from": _fmt_date(chunk_from),
+                    "to": _fmt_date(chunk_to),
+                })
+                items = payload.get("closures", []) if isinstance(payload, dict) else []
+                rows = [{
+                    "date": c.get("date"),
+                    "restaurant_id": int(c.get("id_restaurant")),
+                    "turnover": _to_float(c.get("turnover")) / 100.0,
+                    "taxes": _to_float(c.get("taxes")) / 100.0,
+                } for c in items if c.get("date")]
+                cache.store_closures(rows)
+                ok = True
+            finally:
+                if ok:
+                    synced = []
+                    d = chunk_from
+                    while d <= chunk_to:
+                        if d < today:
+                            synced.append(d)
+                        d += timedelta(days=1)
+                    cache.mark_synced("closures", rid, synced)
 
 
 def fetch_closures(
@@ -205,57 +211,66 @@ def fetch_closures(
 
 
 def _sync_orders_for_resto(rid: int, date_from: date, date_to: date) -> None:
-    """Sync incrémentale des commandes vers la DB locale (avec pagination)."""
+    """Sync incrémentale des commandes — marque les jours synchronisés même
+    si la pagination échoue partiellement (la prochaine session reprendra
+    depuis l'état actuel sans tout re-télécharger)."""
     today = date.today()
     ranges = cache.missing_ranges(rid, "orders", date_from, date_to)
     for cf, ct in ranges:
-        # Pour today : on supprime puis on réinsère pour avoir un état frais
         if cf == today and ct == today:
             cache.delete_orders_for_day(rid, today)
 
         for chunk_from, chunk_to in _date_chunks(cf, ct):
-            page = 1
-            while True:
-                payload = _get(f"/{API_VERSION}/orders", params={
-                    "restaurant_id": rid,
-                    "from": _fmt_date(chunk_from),
-                    "to": _fmt_date(chunk_to),
-                    "limit": 200,
-                    "page": page,
-                })
-                orders = payload.get("orders", []) if isinstance(payload, dict) else []
-                if not orders:
-                    break
-                rows = []
-                for o in orders:
-                    closed_at = o.get("closed_at") or ""
-                    closed_date = closed_at[:10] if closed_at else _fmt_date(chunk_from)
-                    price = o.get("price") or {}
-                    rows.append({
-                        "order_id": int(o.get("id")),
-                        "restaurant_id": int(o.get("id_restaurant", rid)),
-                        "closed_at": closed_at,
-                        "closed_date": closed_date,
-                        "mode": o.get("mode"),
-                        "source": o.get("source"),
-                        "origin": o.get("origin_name"),
-                        "ttc": _to_float(price.get("final_amount_inc_tax")) / 100.0,
-                        "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
+            chunk_completed = False
+            try:
+                page = 1
+                while True:
+                    payload = _get(f"/{API_VERSION}/orders", params={
+                        "restaurant_id": rid,
+                        "from": _fmt_date(chunk_from),
+                        "to": _fmt_date(chunk_to),
+                        "limit": 200,
+                        "page": page,
                     })
-                cache.store_orders(rows)
-                if len(orders) < 200:
-                    break
-                page += 1
-                if page > 500:
-                    break
-            # Marquer comme syncé les jours < today dans ce chunk
-            synced_days = []
-            d = chunk_from
-            while d <= chunk_to:
-                if d < today:
-                    synced_days.append(d)
-                d += timedelta(days=1)
-            cache.mark_synced("orders", rid, synced_days)
+                    orders = payload.get("orders", []) if isinstance(payload, dict) else []
+                    if not orders:
+                        chunk_completed = True
+                        break
+                    rows = []
+                    for o in orders:
+                        closed_at = o.get("closed_at") or ""
+                        closed_date = closed_at[:10] if closed_at else _fmt_date(chunk_from)
+                        price = o.get("price") or {}
+                        rows.append({
+                            "order_id": int(o.get("id")),
+                            "restaurant_id": int(o.get("id_restaurant", rid)),
+                            "closed_at": closed_at,
+                            "closed_date": closed_date,
+                            "mode": o.get("mode"),
+                            "source": o.get("source"),
+                            "origin": o.get("origin_name"),
+                            "ttc": _to_float(price.get("final_amount_inc_tax")) / 100.0,
+                            "ht": _to_float(price.get("final_amount_exc_tax")) / 100.0,
+                        })
+                    cache.store_orders(rows)
+                    if len(orders) < 200:
+                        chunk_completed = True
+                        break
+                    page += 1
+                    if page > 500:
+                        break
+            finally:
+                # Marquer synchronisés les jours < today que le chunk a couverts.
+                # Important : on le fait même en cas d'exception/rate-limit pour
+                # ne pas re-fetch indéfiniment ce qui est déjà partiellement stocké.
+                if chunk_completed:
+                    synced = []
+                    d = chunk_from
+                    while d <= chunk_to:
+                        if d < today:
+                            synced.append(d)
+                        d += timedelta(days=1)
+                    cache.mark_synced("orders", rid, synced)
 
 
 def fetch_orders_summary(
