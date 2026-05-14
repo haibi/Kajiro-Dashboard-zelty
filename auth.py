@@ -20,7 +20,6 @@ ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
 
 BOOTSTRAP_ADMIN_EMAIL = "hello@kajirosushi.com"
-BOOTSTRAP_DEFAULT_PASSWORD = "kajiro2026"  # ⚠ à changer après 1ère connexion
 
 COOKIE_NAME = "kj_session"
 TTL_DAYS = 30
@@ -33,10 +32,16 @@ def _cookies() -> stx.CookieManager:
 
 
 def _ensure_bootstrap() -> None:
-    """1ère exec : crée l'admin par défaut + password initial si vide."""
+    """1ère exec : crée l'admin par défaut + pose le password initial si vide.
+
+    Le password initial est lu depuis le secret `BOOTSTRAP_ADMIN_PASSWORD`.
+    S'il est absent, l'admin est créé SANS password (login impossible — il faut
+    soit définir le secret, soit modifier la table users directement via Supabase).
+    """
     try:
         cache.init_db()
-        cache.bootstrap_admin(BOOTSTRAP_ADMIN_EMAIL, default_password=BOOTSTRAP_DEFAULT_PASSWORD)
+        default_pwd = st.secrets.get("BOOTSTRAP_ADMIN_PASSWORD", None)
+        cache.bootstrap_admin(BOOTSTRAP_ADMIN_EMAIL, default_password=default_pwd)
     except Exception as e:  # noqa: BLE001
         st.error(f"Impossible de connecter Supabase : {e}")
         st.stop()

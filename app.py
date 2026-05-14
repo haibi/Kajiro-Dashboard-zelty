@@ -66,10 +66,10 @@ def profile_dialog(user_info: dict) -> None:
         else:
             try:
                 cache.set_password(user_info["email"], new_pw)
-                st.success("✅ Mot de passe mis à jour")
-                for k in ("prof_d_old", "prof_d_new", "prof_d_conf"):
-                    st.session_state[k] = ""
-                st.rerun()
+                st.success("✅ Mot de passe mis à jour. Tu peux refermer cette fenêtre.")
+                # Note : on ne touche pas à st.session_state pour les keys widgets
+                # (Streamlit l'interdit après instanciation). Le dialog se refermera
+                # naturellement au prochain click "Annuler" ou autre interaction.
             except ValueError as e:
                 st.error(str(e))
     if c_logout.button("🚪 Déconnexion", use_container_width=True):
