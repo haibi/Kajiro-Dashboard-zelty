@@ -2,7 +2,7 @@
 
 Dashboard analytics pour le réseau Kajirō Sushi (7 restaurants) — connecté à l'API Zelty v2.10. Auth via Google OAuth SSO.
 
-**Prod** : <https://kajiro-dashbord.streamlit.app>
+**Prod** : <https://kajiro-dashboard.streamlit.app>
 **Repo** : <https://github.com/YOUR_USERNAME/Kajiro-Dashboard-zelty>
 
 ## Stack
@@ -44,7 +44,7 @@ Accès sur <http://localhost:8501>. Le login utilise ton compte Google.
    - Name : `Kajiro Dashboard`
    - Authorized redirect URIs (les 2 obligatoires) :
      - `http://localhost:8501/oauth2callback`
-     - `https://kajiro-dashbord.streamlit.app/oauth2callback`
+     - `https://kajiro-dashboard.streamlit.app/oauth2callback`
 5. Copier **Client ID** et **Client secret** dans `.streamlit/secrets.toml`
 
 ## Setup Streamlit Cloud
@@ -52,11 +52,11 @@ Accès sur <http://localhost:8501>. Le login utilise ton compte Google.
 1. Pousser ce repo sur GitHub (voir `DEPLOY.md` plus bas)
 2. Se connecter à <https://share.streamlit.io>
 3. **New app** → choisir le repo `Kajiro-Dashboard-zelty`
-4. App URL : `kajiro-dashbord.streamlit.app`
+4. App URL : `kajiro-dashboard.streamlit.app`
 5. Main file : `app.py`
 6. Python version : 3.11
 7. **Advanced settings → Secrets** : coller le contenu complet de `.streamlit/secrets.toml`
-   (modifier `redirect_uri` en `https://kajiro-dashbord.streamlit.app/oauth2callback`)
+   (modifier `redirect_uri` en `https://kajiro-dashboard.streamlit.app/oauth2callback`)
 8. Deploy
 
 ## Gérer les accès
