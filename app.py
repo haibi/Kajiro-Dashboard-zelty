@@ -22,6 +22,63 @@ FAVICON = Path(__file__).parent / "Images" / "favicon.svg"
 TOP_PRESETS = [15, 30, 50, 100]
 
 
+@st.dialog("👤 Mon compte", width="large")
+def profile_dialog(user_info: dict) -> None:
+    """Dialog profil utilisateur : info + changement mot de passe + déconnexion."""
+    user_rids = user_info.get("restaurant_ids")
+    if user_rids is None:
+        scope_label = "Tous les restaurants (7/7)"
+    elif not user_rids:
+        scope_label = "Aucun restaurant — contacte un admin"
+    else:
+        scope_label = f"{len(user_rids)} restaurant(s) sélectionné(s)"
+    st.markdown(
+        f"<div style='background:{COLORS['surface']};border:1px solid {COLORS['border']};"
+        f"border-radius:10px;padding:14px 18px;margin-bottom:18px;'>"
+        f"<div style='display:grid;grid-template-columns:90px 1fr;gap:8px 16px;font-size:13px;'>"
+        f"<div style='color:{COLORS['muted']};'>Email</div>"
+        f"<div style='color:{COLORS['white']};font-weight:600;'>{user_info['email']}</div>"
+        f"<div style='color:{COLORS['muted']};'>Rôle</div>"
+        f"<div style='color:{COLORS['coral']};font-weight:700;letter-spacing:0.08em;'>"
+        f"{user_info['role'].upper()}</div>"
+        f"<div style='color:{COLORS['muted']};'>Accès</div>"
+        f"<div style='color:{COLORS['white']};font-size:12px;'>{scope_label}</div>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("**🔒 Changer mon mot de passe**")
+    old_pw = st.text_input("Mot de passe actuel", type="password", key="prof_d_old")
+    new_pw = st.text_input("Nouveau mot de passe (min 8 caractères)", type="password", key="prof_d_new")
+    confirm_pw = st.text_input("Confirmer", type="password", key="prof_d_conf")
+
+    c_save, c_logout = st.columns(2)
+    if c_save.button("✅ Mettre à jour", type="primary", use_container_width=True):
+        u_db = cache.get_user(user_info["email"])
+        if not u_db or not cache.verify_password(old_pw or "", u_db.get("password_hash")):
+            st.error("Mot de passe actuel incorrect.")
+        elif not new_pw or len(new_pw) < 8:
+            st.error("Min. 8 caractères.")
+        elif new_pw != confirm_pw:
+            st.error("Les deux nouveaux mots de passe ne correspondent pas.")
+        elif new_pw == old_pw:
+            st.error("Le nouveau mot de passe doit être différent de l'actuel.")
+        else:
+            try:
+                cache.set_password(user_info["email"], new_pw)
+                st.success("✅ Mot de passe mis à jour")
+                for k in ("prof_d_old", "prof_d_new", "prof_d_conf"):
+                    st.session_state[k] = ""
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+    if c_logout.button("🚪 Déconnexion", use_container_width=True):
+        from auth import logout
+        logout()
+        st.rerun()
+    st.caption("Pour modifier ton email ou ton rôle, contacte un administrateur.")
+
+
 @st.dialog("👥 Gestion des utilisateurs", width="large")
 def users_dialog(all_restos: list[dict]) -> None:
     """Panneau admin : liste, ajout, modif, suppression d'utilisateurs."""
@@ -136,7 +193,16 @@ inject_css()
 
 user = require_login()
 
-header()
+# Header avec bouton profil à droite
+h_logo, h_btn = st.columns([5, 1])
+with h_logo:
+    header()
+with h_btn:
+    initial = (user.get("email", "?") or "?")[0].upper()
+    if st.button(f"👤  {initial}", key="profile_btn",
+                  help=f"{user.get('email', '')} · clique pour gérer ton compte",
+                  use_container_width=True):
+        profile_dialog(user)
 
 # ------------------------------------------------------------------
 # Restaurants
@@ -265,8 +331,8 @@ st.caption(
 # ------------------------------------------------------------------
 # Onglets
 # ------------------------------------------------------------------
-tab_dashboard, tab_produits, tab_freq, tab_sources, tab_clients, tab_board, tab_profil = st.tabs(
-    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES", "CLIENTS", "BOARD", "👤 PROFIL"]
+tab_dashboard, tab_produits, tab_freq, tab_sources, tab_clients, tab_board = st.tabs(
+    ["DASHBOARD", "PRODUITS", "FRÉQUENTATION", "ORIGINES", "CLIENTS", "BOARD"]
 )
 
 # =============================================================================
@@ -1214,84 +1280,6 @@ with tab_board:
             "💡 Ajoute `ANTHROPIC_API_KEY` dans `.streamlit/secrets.toml` "
             "pour activer l'analyse stratégique générée par Claude."
         )
-
-# =============================================================================
-# TAB 7 — Profil utilisateur (changement mot de passe)
-# =============================================================================
-with tab_profil:
-    st.markdown(
-        f"<div style='color:{COLORS['muted']};font-size:10px;letter-spacing:0.12em;"
-        f"text-transform:uppercase;margin-bottom:2px;'>MON COMPTE</div>"
-        f"<div style='color:{COLORS['white']};font-size:22px;font-weight:700;margin-bottom:14px;'>"
-        f"Profil</div>",
-        unsafe_allow_html=True,
-    )
-
-    # Carte info
-    user_rids = user.get("restaurant_ids")
-    scope_label = (
-        "Tous les restaurants"
-        if user_rids is None
-        else f"{len(user_rids)} restaurant(s) : " + ", ".join(
-            id_to_name.get(int(r), f"#{r}") for r in user_rids
-        )
-    )
-    st.markdown(
-        f"<div style='background:{COLORS['surface']};border:1px solid {COLORS['border']};"
-        f"border-radius:10px;padding:16px 20px;margin-bottom:24px;'>"
-        f"<div style='display:grid;grid-template-columns:140px 1fr;gap:10px 18px;font-size:13px;'>"
-        f"<div style='color:{COLORS['muted']};'>Email</div>"
-        f"<div style='color:{COLORS['white']};font-weight:600;'>{user['email']}</div>"
-        f"<div style='color:{COLORS['muted']};'>Rôle</div>"
-        f"<div style='color:{COLORS['coral']};font-weight:700;letter-spacing:0.08em;'>"
-        f"{user['role'].upper()}</div>"
-        f"<div style='color:{COLORS['muted']};'>Accès</div>"
-        f"<div style='color:{COLORS['white']};'>{scope_label}</div>"
-        f"</div></div>",
-        unsafe_allow_html=True,
-    )
-
-    # === Changement de mot de passe ===
-    st.markdown(
-        f"<div style='color:{COLORS['muted']};font-size:11px;letter-spacing:0.12em;"
-        f"text-transform:uppercase;margin:8px 0 10px;'>🔒 Changer mon mot de passe</div>",
-        unsafe_allow_html=True,
-    )
-
-    pc1, pc2 = st.columns(2)
-    with pc1:
-        old_pw = st.text_input("Mot de passe actuel", type="password",
-                                  key="profil_old_pw", placeholder="•••••••••")
-    new_pw = st.text_input("Nouveau mot de passe", type="password",
-                              key="profil_new_pw", placeholder="Min. 8 caractères")
-    confirm_pw = st.text_input("Confirmer le nouveau mot de passe", type="password",
-                                  key="profil_confirm_pw")
-
-    if st.button("✅ Mettre à jour le mot de passe", type="primary"):
-        u_db = cache.get_user(user["email"])
-        if not u_db or not cache.verify_password(old_pw or "", u_db.get("password_hash")):
-            st.error("Mot de passe actuel incorrect.")
-        elif not new_pw or len(new_pw) < 8:
-            st.error("Le nouveau mot de passe doit faire au moins 8 caractères.")
-        elif new_pw != confirm_pw:
-            st.error("Les deux nouveaux mots de passe ne correspondent pas.")
-        elif new_pw == old_pw:
-            st.error("Le nouveau mot de passe doit être différent de l'actuel.")
-        else:
-            try:
-                cache.set_password(user["email"], new_pw)
-                st.success("✅ Mot de passe mis à jour. La session reste active.")
-                # Reset des champs
-                for k in ("profil_old_pw", "profil_new_pw", "profil_confirm_pw"):
-                    st.session_state[k] = ""
-            except ValueError as e:
-                st.error(str(e))
-
-    st.caption(
-        "🛈 Pour modifier ton email ou ton rôle, contacte un administrateur. "
-        "Pour gérer les autres utilisateurs (si tu es admin), va dans le sidebar."
-    )
-
 
 # ------------------------------------------------------------------
 # Sidebar
