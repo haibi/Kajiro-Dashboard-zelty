@@ -195,18 +195,29 @@ tab_reseau, tab_produits = st.tabs(["RÉSEAU", "PRODUITS"])
 # TAB 1 — Réseau (depuis closures + orders)
 # =============================================================================
 with tab_reseau:
-    with st.spinner(f"Récupération CA · {len(selected_ids)} restos · {period.days} j…"):
+    closures = pd.DataFrame()
+    orders = pd.DataFrame()
+    with st.status(
+        f"Synchronisation · {len(selected_ids)} restos · {period.days} jours",
+        expanded=True,
+    ) as status:
         try:
-            closures = zelty_client.fetch_closures(selected_ids, period.start, period.end)
+            closures = zelty_client.fetch_closures(
+                selected_ids, period.start, period.end,
+                on_progress=status.write,
+            )
+            status.write(f"✓ {len(closures)} closures en cache")
         except zelty_client.ZeltyError as e:
-            st.error(f"Closures: {e}")
-            closures = pd.DataFrame()
-
+            status.write(f"❌ Closures : {e}")
         try:
-            orders = zelty_client.fetch_orders_summary(selected_ids, period.start, period.end)
+            orders = zelty_client.fetch_orders_summary(
+                selected_ids, period.start, period.end,
+                on_progress=status.write,
+            )
+            status.write(f"✓ {len(orders)} commandes en cache")
         except zelty_client.ZeltyError as e:
-            st.warning(f"Orders: {e}")
-            orders = pd.DataFrame()
+            status.write(f"⚠ Orders : {e}")
+        status.update(label="Synchronisation terminée", state="complete", expanded=False)
 
     if closures.empty and orders.empty:
         st.info("Aucune donnée sur cette période pour les restaurants sélectionnés.")

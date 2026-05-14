@@ -13,9 +13,8 @@ dans les routes publiques. En attendant: fallback CSV (export Zelty BO).
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -33,9 +32,8 @@ import cache
 PARIS = ZoneInfo("Europe/Paris")
 API_VERSION = "2.10"
 PER_PAGE = 200
-MAX_PARALLEL = 1                  # Zelty rate-limit très agressif — serial
 MAX_DAYS_PER_REQUEST = 31         # /orders refuse les intervalles > 31 j
-THROTTLE_SECONDS = 0.4            # pause entre chaque appel API pour rester sous le rate-limit
+THROTTLE_SECONDS = 0.15           # pause minimale entre appels API
 
 # Restaurants accessibles via la clé groupe mais hors périmètre Kajirō.
 # In Bun (id 6328) — concept séparé, ne fait pas partie des 7 enseignes Kajirō.
@@ -181,23 +179,22 @@ def fetch_closures(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
+    on_progress: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
-    """CA et taxes quotidiens — cache-first.
-
-    Synchronise depuis Zelty UNIQUEMENT les jours non encore en cache + today.
-    Retour : DataFrame {date, restaurant_id, turnover (€), taxes (€)}.
-    """
+    """CA et taxes quotidiens — cache-first, serial."""
     if not restaurant_ids:
         return pd.DataFrame(columns=["date", "restaurant_id", "turnover", "taxes"])
 
     cache.init_db()
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-        futures = {pool.submit(_sync_closures_for_resto, rid, date_from, date_to): rid for rid in restaurant_ids}
-        for fut in as_completed(futures):
-            try:
-                fut.result()
-            except ZeltyError as e:
-                st.warning(f"Restaurant {futures[fut]} — {e}")
+    n = len(restaurant_ids)
+    for i, rid in enumerate(restaurant_ids, start=1):
+        if on_progress:
+            on_progress(f"💰 Closures · resto {i}/{n} (id {rid})")
+        try:
+            _sync_closures_for_resto(rid, date_from, date_to)
+        except ZeltyError as e:
+            if on_progress:
+                on_progress(f"⚠ resto {rid} closures : {e}")
 
     rows = cache.query_closures(list(restaurant_ids), date_from, date_to)
     if not rows:
@@ -277,19 +274,22 @@ def fetch_orders_summary(
     restaurant_ids: tuple[int, ...],
     date_from: date,
     date_to: date,
+    on_progress: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
-    """Commandes — cache-first. Renvoie les résumés (1 ligne par commande)."""
+    """Commandes — cache-first, serial."""
     if not restaurant_ids:
         return pd.DataFrame()
 
     cache.init_db()
-    with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-        futures = {pool.submit(_sync_orders_for_resto, rid, date_from, date_to): rid for rid in restaurant_ids}
-        for fut in as_completed(futures):
-            try:
-                fut.result()
-            except ZeltyError as e:
-                st.warning(f"Restaurant {futures[fut]} — {e}")
+    n = len(restaurant_ids)
+    for i, rid in enumerate(restaurant_ids, start=1):
+        if on_progress:
+            on_progress(f"🧾 Commandes · resto {i}/{n} (id {rid})")
+        try:
+            _sync_orders_for_resto(rid, date_from, date_to)
+        except ZeltyError as e:
+            if on_progress:
+                on_progress(f"⚠ resto {rid} orders : {e}")
 
     rows = cache.query_orders(list(restaurant_ids), date_from, date_to)
     return pd.DataFrame(rows) if rows else pd.DataFrame()
