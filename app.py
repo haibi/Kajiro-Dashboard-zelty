@@ -11,6 +11,7 @@ import streamlit as st
 import periods
 import zelty_client
 from auth import logout, require_login
+from components import render_ranking_table
 from theme import COLORS, header, inject_css
 
 FAVICON = Path(__file__).parent / "assets" / "favicon.svg"
@@ -143,34 +144,28 @@ with tab_reseau:
                 lambda r: r["ca_ttc"] / r["cmds"] if r["cmds"] else 0, axis=1
             )
         per_resto = per_resto.sort_values("ca_ttc", ascending=False).reset_index(drop=True)
-        per_resto.insert(0, "#", range(1, len(per_resto) + 1))
 
-        display_cols = ["#", "nom", "ca_ttc", "ca_ht", "cmds", "ticket_moyen", "pct", "jours"]
-        existing_cols = [c for c in display_cols if c in per_resto.columns]
-        display = per_resto[existing_cols].rename(columns={
-            "nom": "Restaurant",
-            "ca_ttc": "CA TTC (€)",
-            "ca_ht": "CA HT (€)",
-            "cmds": "Cmds",
-            "ticket_moyen": "Ticket moy. (€)",
-            "pct": "% CA",
-            "jours": "Jours",
-        })
-        st.dataframe(
-            display,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "CA TTC (€)": st.column_config.ProgressColumn(
-                    format="%.0f €", min_value=0, max_value=float(display["CA TTC (€)"].max() or 1),
-                ),
-                "CA HT (€)": st.column_config.NumberColumn(format="%.0f €"),
-                "Cmds": st.column_config.NumberColumn(format="%d"),
-                "Ticket moy. (€)": st.column_config.NumberColumn(format="%.2f €"),
-                "% CA": st.column_config.NumberColumn(format="%.2f %%"),
-                "Jours": st.column_config.NumberColumn(format="%d j"),
-            },
-        )
+        rows = per_resto.to_dict("records")
+        columns = [
+            {"key": "ca_ttc", "label": "CA TTC", "fmt": "eur", "highlight": True},
+            {"key": "ca_ht", "label": "CA HT", "fmt": "eur"},
+            {"key": "cmds", "label": "CMDS", "fmt": "int"},
+            {"key": "ticket_moyen", "label": "TICKET MOY.", "fmt": "money2"},
+            {"key": "pct", "label": "% CA", "fmt": "pct"},
+            {"key": "jours", "label": "JOURS", "fmt": "days"},
+        ]
+        # Filtrer colonnes absentes (ex: orders pas dispo)
+        columns = [c for c in columns if c["key"] in per_resto.columns]
+        footer = {
+            "ca_ttc": per_resto["ca_ttc"].sum(),
+            "ca_ht": per_resto["ca_ht"].sum() if "ca_ht" in per_resto.columns else None,
+            "cmds": per_resto["cmds"].sum() if "cmds" in per_resto.columns else None,
+            "ticket_moyen": (per_resto["ca_ttc"].sum() / per_resto["cmds"].sum())
+                if "cmds" in per_resto.columns and per_resto["cmds"].sum() else None,
+            "pct": 100.0,
+            "jours": per_resto["jours"].max() if "jours" in per_resto.columns else None,
+        }
+        render_ranking_table(rows, columns, spark_field="ca_ttc", footer=footer)
 
         # Évolution CA par jour
         st.markdown("---")

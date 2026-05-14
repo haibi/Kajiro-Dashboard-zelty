@@ -250,6 +250,70 @@ def _css() -> str:
             letter-spacing: 0.16em;
             text-transform: uppercase;
         }}
+
+        /* === Ranking table (style Bron) === */
+        .kj-table {{
+            background: {c['surface']};
+            border: 1px solid {c['border']};
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 8px;
+        }}
+        .kj-tr {{
+            display: grid;
+            grid-template-columns: var(--cols);
+            gap: 10px;
+            padding: 12px 16px;
+            border-bottom: 1px solid {c['border']};
+            align-items: center;
+            font-size: 13px;
+            transition: background 0.12s;
+        }}
+        .kj-tr:last-child {{ border-bottom: none; }}
+        .kj-tr:not(.kj-thead):not(.kj-tfoot):hover {{
+            background: {c['coral']}0A;
+        }}
+        .kj-tr > div {{
+            min-width: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .kj-thead {{
+            background: {c['surface_alt']};
+            color: {c['muted']};
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            padding-top: 10px; padding-bottom: 10px;
+        }}
+        .kj-thead .kj-h-hi {{ color: {c['coral']}; }}
+        .kj-tfoot {{
+            background: {c['surface_alt']};
+            border-top: 1px solid {c['border']};
+            border-bottom: none;
+            font-size: 12px;
+        }}
+        .kj-rank {{ font-size: 13px; }}
+        .kj-name-cell {{ display: flex; flex-direction: column; gap: 6px; }}
+        .kj-name-cell > div:first-child {{
+            color: {c['white']}; font-size: 13px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }}
+        .kj-spark {{
+            width: 100%;
+            height: 3px;
+            background: {c['dim']};
+            border-radius: 2px;
+            overflow: hidden;
+        }}
+        .kj-spark-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, {c['coral']}, {c['amber']});
+            border-radius: 2px;
+            transition: width 0.4s ease;
+        }}
     """).strip()
 
 

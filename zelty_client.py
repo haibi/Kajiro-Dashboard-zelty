@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -31,7 +31,8 @@ from tenacity import (
 PARIS = ZoneInfo("Europe/Paris")
 API_VERSION = "2.10"
 PER_PAGE = 200
-MAX_PARALLEL = 3
+MAX_PARALLEL = 2                  # Zelty rate-limit agressif
+MAX_DAYS_PER_REQUEST = 31         # /orders refuse les intervalles > 31 j
 
 # Restaurants accessibles via la clé groupe mais hors périmètre Kajirō.
 # In Bun (id 6328) — concept séparé, ne fait pas partie des 7 enseignes Kajirō.
@@ -67,17 +68,20 @@ def _base_url() -> str:
 
 @retry(
     reraise=True,
-    stop=stop_after_attempt(4),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=15),
     retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
 )
 def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+    """GET avec retry réseau + back-off long pour 429 (rate-limit Zelty)."""
     url = f"{_base_url()}{path}"
-    resp = requests.get(url, headers=_headers(), params=params, timeout=30)
-    if resp.status_code == 429:
-        retry_after = int(resp.headers.get("Retry-After", "2"))
-        time.sleep(retry_after)
+    for attempt in range(5):
         resp = requests.get(url, headers=_headers(), params=params, timeout=30)
+        if resp.status_code == 429:
+            wait_s = int(resp.headers.get("Retry-After", "3")) + attempt * 2
+            time.sleep(min(wait_s, 30))
+            continue
+        break
     if resp.status_code == 401:
         raise ZeltyError("Auth Zelty rejetée (401). Vérifier ZELTY_API_KEY / ZELTY_AUTH_SCHEME.")
     if resp.status_code >= 400:
@@ -90,6 +94,18 @@ def _get(path: str, params: dict[str, Any] | None = None) -> Any:
 
 def _fmt_date(d: date) -> str:
     return d.strftime("%Y-%m-%d")
+
+
+def _date_chunks(date_from: date, date_to: date, max_days: int = MAX_DAYS_PER_REQUEST) -> list[tuple[date, date]]:
+    """Découpe une plage en sous-plages d'au plus `max_days` jours."""
+    chunks: list[tuple[date, date]] = []
+    current = date_from
+    step = timedelta(days=max_days - 1)
+    while current <= date_to:
+        end = min(current + step, date_to)
+        chunks.append((current, end))
+        current = end + timedelta(days=1)
+    return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -123,12 +139,17 @@ def list_restaurants() -> pd.DataFrame:
 # Closures (CA quotidien par restaurant)
 # ---------------------------------------------------------------------------
 def _fetch_closures_one(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
-    payload = _get(f"/{API_VERSION}/closures", params={
-        "restaurant_id": restaurant_id,
-        "from": _fmt_date(date_from),
-        "to": _fmt_date(date_to),
-    })
-    return payload.get("closures", []) if isinstance(payload, dict) else []
+    """Closures pour un resto sur une plage (chunkée en 31j max)."""
+    all_rows: list[dict] = []
+    for cf, ct in _date_chunks(date_from, date_to):
+        payload = _get(f"/{API_VERSION}/closures", params={
+            "restaurant_id": restaurant_id,
+            "from": _fmt_date(cf),
+            "to": _fmt_date(ct),
+        })
+        if isinstance(payload, dict):
+            all_rows.extend(payload.get("closures", []))
+    return all_rows
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -171,12 +192,17 @@ def fetch_closures(
 # Orders (résumés uniquement — pas de lignes produits dans v2.10)
 # ---------------------------------------------------------------------------
 def _fetch_orders_one(restaurant_id: int, date_from: date, date_to: date) -> list[dict]:
-    payload = _get(f"/{API_VERSION}/orders", params={
-        "restaurant_id": restaurant_id,
-        "from": _fmt_date(date_from),
-        "to": _fmt_date(date_to),
-    })
-    return payload.get("orders", []) if isinstance(payload, dict) else []
+    """Orders pour un resto sur une plage (chunkée en 31j max)."""
+    all_rows: list[dict] = []
+    for cf, ct in _date_chunks(date_from, date_to):
+        payload = _get(f"/{API_VERSION}/orders", params={
+            "restaurant_id": restaurant_id,
+            "from": _fmt_date(cf),
+            "to": _fmt_date(ct),
+        })
+        if isinstance(payload, dict):
+            all_rows.extend(payload.get("orders", []))
+    return all_rows
 
 
 @st.cache_data(ttl=900, show_spinner=False)
