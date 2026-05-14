@@ -77,7 +77,7 @@ def require_login() -> dict:
     if user:
         return user
 
-    logo = load_svg("logo_carre_blanc.svg")
+    logo = load_svg("kajiro_logo_carre_blanc.svg")
     st.markdown('<div class="kj-login-bg"></div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="kj-login-card">'

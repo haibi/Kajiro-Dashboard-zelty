@@ -16,7 +16,7 @@ from auth import allowed_restaurant_ids, logout, require_login
 from components import render_product_table, render_ranking_table
 from theme import COLORS, header, inject_css
 
-FAVICON = Path(__file__).parent / "assets" / "favicon.svg"
+FAVICON = Path(__file__).parent / "Images" / "favicon.svg"
 
 TOP_PRESETS = [15, 30, 50, 100]
 

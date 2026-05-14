@@ -84,7 +84,7 @@ Tout email non listé reçoit un message d'accès refusé. Pas de redéploiement
 | `zelty_client.py` | Client API Zelty 2.10 · restaurants · closures · orders · CSV fallback |
 | `periods.py` | Périodes : mois en cours, mois précédent, année, plage personnalisée |
 | `theme.py` | Palette + CSS (Poppins + coral officiel #ED7553) |
-| `assets/` | Logos SVG (line, square) + favicon K |
+| `Images/` | Logos SVG Kajirō (ligne, carré) + favicon K |
 | `.streamlit/config.toml` | Thème Streamlit |
 | `.streamlit/secrets.toml` | **NON COMMITÉ** — clés + auth |
 | `.streamlit/secrets.example.toml` | Template public |

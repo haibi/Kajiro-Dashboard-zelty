@@ -24,12 +24,12 @@ COLORS = {
     "bronze": "#CD7F32",
 }
 
-ASSETS = Path(__file__).parent / "assets"
+IMAGES_DIR = Path(__file__).parent / "Images"
 
 
 def load_svg(name: str) -> str:
     """Retourne le contenu SVG inline-prêt (sans wrapper)."""
-    path = ASSETS / name
+    path = IMAGES_DIR / name
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
@@ -322,7 +322,7 @@ def inject_css() -> None:
 
 
 def header() -> None:
-    logo = load_svg("logo_ligne_blanc.svg")
+    logo = load_svg("kajiro_logo_ligne_blanc.svg")
     html = (
         '<div class="kj-header">'
         f"{logo}"
