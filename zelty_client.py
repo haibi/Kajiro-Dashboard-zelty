@@ -20,12 +20,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 import streamlit as st
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 import cache
 
@@ -35,7 +29,7 @@ PER_PAGE = 200
 MAX_DAYS_PER_REQUEST = 31         # /orders refuse les intervalles > 31 j
 # Rate-limit Zelty mesuré : ~5 req par burst de 1 sec, recovery ~5 sec.
 # Throttle 1 req/sec = aucun 429 en régime stable.
-THROTTLE_SECONDS = 1.05
+THROTTLE_SECONDS = 1.5  # plus conservateur — le rate-limit Zelty est imprévisible
 
 # Restaurants accessibles via la clé groupe mais hors périmètre Kajirō.
 # In Bun (id 6328) — concept séparé, ne fait pas partie des 7 enseignes Kajirō.
@@ -69,21 +63,21 @@ def _base_url() -> str:
     return (_secret("ZELTY_BASE_URL", "https://api.zelty.fr") or "").rstrip("/")
 
 
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=5),
-    retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
-)
 def _get(path: str, params: dict[str, Any] | None = None) -> Any:
-    """GET avec throttle proactif (1 req/sec) + retry court sur 429."""
+    """GET avec throttle proactif + retry court sur 429.
+
+    Pas de retry sur timeout/connectionerror — on laisse remonter pour ne pas
+    bloquer 5×30s par appel raté. Le mark_synced est protégé par try/finally.
+    """
     url = f"{_base_url()}{path}"
-    time.sleep(THROTTLE_SECONDS)  # throttle proactif → évite 429
+    time.sleep(THROTTLE_SECONDS)
+    resp = None
     for attempt in range(3):
-        resp = requests.get(url, headers=_headers(), params=params, timeout=30)
+        resp = requests.get(url, headers=_headers(), params=params, timeout=15)
         if resp.status_code == 429:
-            wait_s = max(int(resp.headers.get("Retry-After", "5")), 5)
-            time.sleep(wait_s)
+            # On plafonne à 10s même si Zelty demande plus — sinon ça bloque tout
+            wait_s = min(int(resp.headers.get("Retry-After", "5")), 10)
+            time.sleep(max(wait_s, 3))
             continue
         break
     if resp.status_code == 401:
@@ -226,18 +220,19 @@ def _sync_orders_for_resto(
         for chunk_from, chunk_to in _date_chunks(cf, ct):
             chunk_completed = False
             try:
-                page = 1
+                offset = 0
+                page_num = 1
                 while True:
                     if on_progress:
                         on_progress(
-                            f"  · {chunk_from:%d/%m}–{chunk_to:%d/%m} page {page}"
+                            f"  · {chunk_from:%d/%m}–{chunk_to:%d/%m} page {page_num} (offset {offset})"
                         )
                     payload = _get(f"/{API_VERSION}/orders", params={
                         "restaurant_id": rid,
                         "from": _fmt_date(chunk_from),
                         "to": _fmt_date(chunk_to),
                         "limit": 200,
-                        "page": page,
+                        "offset": offset,
                     })
                     orders = payload.get("orders", []) if isinstance(payload, dict) else []
                     if not orders:
@@ -263,8 +258,9 @@ def _sync_orders_for_resto(
                     if len(orders) < 200:
                         chunk_completed = True
                         break
-                    page += 1
-                    if page > 500:
+                    offset += 200
+                    page_num += 1
+                    if offset > 100000:  # safety — pas plus de 100k orders / chunk
                         break
             finally:
                 # Marquer synchronisés les jours < today que le chunk a couverts.
